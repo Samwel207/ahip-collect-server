@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AHIP Collect Invitation</title>
+  <link rel="icon" href="ahip_logo.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="auth-page">
+  <main class="auth-card">
+    <div class="auth-head">
+      <img src="ahip_logo.png" alt="AHIP" class="auth-logo">
+      <h1 id="title">Welcome to AHIP Collect</h1>
+      <p id="lead" class="muted">Checking your invitation…</p>
+    </div>
+
+    <form id="inviteForm" class="auth-form" hidden>
+      <div class="account-box">
+        <span class="muted">Your username</span>
+        <strong id="username"></strong>
+      </div>
+      <label>Choose a password <input name="password" type="password" autocomplete="new-password" minlength="8" required></label>
+      <label>Confirm password <input name="confirm" type="password" autocomplete="new-password" minlength="8" required></label>
+      <p class="hint">At least 8 characters, with letters and numbers.</p>
+      <button type="submit" class="btn primary wide">Activate my account</button>
+    </form>
+
+    <div id="done" class="done" hidden>
+      <p><strong>Your account is ready.</strong></p>
+      <ol>
+        <li>Open the <b>AHIP Data Collect</b> app on your phone.</li>
+        <li>Tap <b>Get Started</b>.</li>
+        <li>Sign in with username <b id="doneUsername"></b> and the password you just chose.</li>
+      </ol>
+    </div>
+
+    <p id="message" class="form-error" role="alert" hidden></p>
+  </main>
+  <script src="invite.js"></script>
+</body>
+</html>

@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Forms · AHIP Manage</title>
+  <link rel="icon" href="ahip_logo.png">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="ai.css">
+  <link rel="stylesheet" href="forms.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="ahip_logo.png" alt="AHIP" class="logo">
+      <div>
+        <h1>AHIP Manage <span class="badge">Forms</span></h1>
+        <p class="subtitle">Create and design forms · phones get changes at their next Sync</p>
+      </div>
+    </div>
+    <div class="refresh">
+      <span id="me" class="muted"></span>
+      <button id="logoutBtn" type="button" class="btn ghost-on-dark">Sign out</button>
+    </div>
+  </header>
+  <nav class="tabs" aria-label="Sections">
+    <a href="/#data">Submitted data</a>
+    <a href="/#users">Users</a>
+    <a href="/#settings">Settings</a>
+    <a href="forms.html" aria-current="page">Forms</a>
+    <a href="fhir.html">FHIR data</a>
+  </nav>
+
+  <main class="forms-layout">
+    <aside class="forms-side">
+      <section class="card">
+        <div class="side-head"><h2>Forms</h2><button id="newFormBtn" type="button" class="btn primary small">+ New form</button></div>
+        <ul id="toolList" class="tool-list"><li class="muted">Loading…</li></ul>
+      </section>
+      <section class="card help-card">
+        <h2>How to design a form</h2>
+        <ol class="help-steps">
+          <li><b>+ New form</b> starts a blank form or a copy of a tool. Each <b>section</b> is one page on the phone.</li>
+          <li><b>＋</b> (toolbar on the right) adds a question after the open one: text, email, phone, multiple choice, checkboxes, dropdown, linear scale, Likert scale, grids (tables), number, slider, date, time, photo, audio, GPS or instructions.</li>
+          <li>Click a question to edit it. <b>More options</b> holds <b>Show only if</b> (any answer: choice, number, text, date, “is answered”) and answer checks. Drag ⠿ to reorder.</li>
+          <li><b>⑂ Logic</b> on a section, or <b>Go to section based on answer</b> on a multiple-choice question, skips whole pages.</li>
+          <li><b>Preview</b> fills the form as the data collector will, with all conditions working.</li>
+          <li><b>Quiz</b> (form settings): give each question its correct answer and points, and a time limit for the whole quiz. When time runs out the phone submits the answers given; the phone shows the score at the end and the dashboard shows scores per person.</li>
+          <li>Or <b>Upload Excel</b>: download the <a href="/api/forms/template.xlsx">template</a> (it has a short guide sheet), fill it, upload, check the preview.</li>
+          <li><b>Publish</b>. Phones receive the new version at their next Sync. Earlier versions can be restored from <b>History</b>.</li>
+        </ol>
+        <p class="hint"><b>Name of CPP</b> (Tools 1, 3, 5) is a dropdown of every CPP already submitted, plus “New CPP (not in the list)”. It updates itself every 30 minutes.</p>
+        <button id="cppListBtn" type="button" class="btn ghost small">Update CPP list now</button>
+        <p class="hint">Items with a 🔒 are used by the app (site, region, GPS, recording, photos) and cannot be removed. Changing an option's wording is safe; deleting options or questions affects how old answers are read.</p>
+      </section>
+    </aside>
+
+    <section class="forms-main">
+      <div id="empty" class="card empty-state">Choose a tool on the left to see and edit its questions.</div>
+
+      <div id="editor" hidden>
+        <div class="card editor-head">
+          <div class="editor-title">
+            <input id="formTitle" class="title-input" aria-label="Form title" placeholder="Form title">
+            <textarea id="formDesc" class="desc-input" rows="1" aria-label="Form description" placeholder="Form description (shown to data collectors)"></textarea>
+            <div class="form-settings">
+              <label>Who is interviewed <input id="formTarget" placeholder="e.g. Health facility in-charges"></label>
+              <label>Minutes <input id="formMinutes" type="number" min="1" max="600" placeholder="20"></label>
+              <label class="quiz-toggle"><input id="formQuiz" type="checkbox"> Quiz (answer key + score)</label>
+              <label id="quizLimitWrap" hidden>Time limit (minutes) <input id="formQuizMinutes" type="number" min="0" max="600" placeholder="none"></label>
+            </div>
+            <p id="formMeta" class="hint"></p>
+          </div>
+          <div class="editor-actions">
+            <span id="dirtyBadge" class="dirty" hidden>Unpublished changes</span>
+            <button id="previewBtn" type="button" class="btn ghost">👁 Preview</button>
+            <button id="uploadBtn" type="button" class="btn ghost">Upload Excel</button>
+            <a id="downloadBtn" class="btn ghost" href="#">Download Excel</a>
+            <button id="historyBtn" type="button" class="btn ghost">History</button>
+            <button id="renumberBtn" type="button" class="btn ghost">Renumber</button>
+            <button id="archiveBtn" type="button" class="btn ghost" hidden>Archive form</button>
+            <button id="discardBtn" type="button" class="btn ghost" disabled>Discard changes</button>
+            <button id="publishBtn" type="button" class="btn primary" disabled>Publish</button>
+          </div>
+        </div>
+        <div id="archivedBanner" class="notice" hidden>This form is archived: phones do not show it. Its submissions are kept. Use <b>Bring back</b> to use it again.</div>
+        <div id="formErrors" class="error" role="alert" hidden></div>
+        <div class="editor-body">
+          <div class="editor-col">
+            <div id="sections"></div>
+            <button id="addSectionBtn" type="button" class="btn ghost wide add-section">+ Add section</button>
+          </div>
+          <div class="side-bar" role="toolbar" aria-label="Add to the form">
+            <button id="sideAdd" type="button" title="Add question (after the open one)">＋</button>
+            <button id="sideSection" type="button" title="Add section (new page)">▭</button>
+            <button id="sideUpload" type="button" title="Upload questions from Excel">⇪</button>
+            <button id="sidePreview" type="button" title="Preview">👁</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Add question: type picker -->
+  <div id="typeMenu" class="type-menu" hidden role="menu"></div>
+
+  <!-- Upload Excel -->
+  <div id="uploadDialog" class="drawer" hidden>
+    <div class="drawer-backdrop" data-close></div>
+    <aside class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="uploadTitle">
+      <div class="drawer-head">
+        <div>
+          <h2 id="uploadTitle">Upload questions from Excel</h2>
+          <p class="muted">XLSForm layout (as in KoboToolbox): a "survey" and a "choices" sheet.</p>
+        </div>
+        <div><button type="button" class="btn ghost small" data-close>Close</button></div>
+      </div>
+      <div class="drawer-body">
+        <ol class="help-steps">
+          <li>Download the <a href="/api/forms/template.xlsx">template</a> or <a id="exportLink" href="#">this tool as Excel</a>. The "guide" sheet explains every column.</li>
+          <li>One row per question. Sections: <code>begin_group</code> … <code>end_group</code>. Grid/table: a group with appearance <code>table-list</code>.</li>
+          <li>Choose the file and how to use it, then check the preview before loading it.</li>
+        </ol>
+        <label class="field">Excel file (.xlsx)
+          <input id="uploadFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+        </label>
+        <fieldset class="field">
+          <legend>Use the questions to</legend>
+          <label class="radio"><input type="radio" name="uploadMode" value="replace" checked> Replace the question sections (Section 1, recording and photos stay)</label>
+          <label class="radio"><input type="radio" name="uploadMode" value="append"> Add them as new sections at the end</label>
+        </fieldset>
+        <button id="uploadPreviewBtn" type="button" class="btn primary">Upload and preview</button>
+        <div id="uploadResult"></div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- New form -->
+  <div id="newDialog" class="drawer" hidden>
+    <div class="drawer-backdrop" data-close></div>
+    <aside class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="newTitleH">
+      <div class="drawer-head">
+        <div>
+          <h2 id="newTitleH">New form</h2>
+          <p class="muted">It gets the next tool number and appears on the phones at their next Sync.</p>
+        </div>
+        <div><button type="button" class="btn ghost small" data-close>Close</button></div>
+      </div>
+      <div class="drawer-body">
+        <label class="field">Title <input id="newTitle" maxlength="120" placeholder="e.g. Household Medicine Use Survey"></label>
+        <label class="field">Who is interviewed (optional) <input id="newTarget" maxlength="120" placeholder="e.g. Heads of household"></label>
+        <label class="field">About how many minutes it takes <input id="newMinutes" type="number" min="1" max="600" value="20"></label>
+        <fieldset class="field">
+          <legend>Start from</legend>
+          <label class="radio"><input type="radio" name="newMode" value="blank" checked> A blank form: keeps the standard first-page fields (study, region, council, GPS, interviewer, date), the interview recording and photo pages, and one empty section</label>
+          <label class="radio"><input type="radio" name="newMode" value="copy"> A copy of a tool, with all its questions</label>
+          <label class="field">Tool to start from <select id="newFrom"></select></label>
+        </fieldset>
+        <p id="newError" class="error" hidden></p>
+        <button id="newCreateBtn" type="button" class="btn primary">Create form</button>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Preview -->
+  <div id="previewDialog" class="drawer" hidden>
+    <div class="drawer-backdrop" data-close></div>
+    <aside class="drawer-panel preview-panel" role="dialog" aria-modal="true" aria-labelledby="previewTitle">
+      <div class="drawer-head">
+        <div>
+          <h2 id="previewTitle">Preview</h2>
+          <p class="muted">The form as the data collector fills it, with conditions working. Nothing is saved.</p>
+        </div>
+        <div><button type="button" class="btn ghost small" data-close>Close</button></div>
+      </div>
+      <div id="previewBody" class="drawer-body"></div>
+    </aside>
+  </div>
+
+  <!-- History -->
+  <div id="historyDialog" class="drawer" hidden>
+    <div class="drawer-backdrop" data-close></div>
+    <aside class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="historyTitle">
+      <div class="drawer-head">
+        <div>
+          <h2 id="historyTitle">Earlier versions</h2>
+          <p class="muted">Saved automatically each time a new version is published.</p>
+        </div>
+        <div><button type="button" class="btn ghost small" data-close>Close</button></div>
+      </div>
+      <div class="drawer-body"><div id="historyList"></div></div>
+    </aside>
+  </div>
+
+  <script src="quiz.js"></script>
+  <script src="forms.js"></script>
+  <script src="ai.js"></script>
+</body>
+</html>

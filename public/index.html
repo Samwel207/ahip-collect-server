@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AHIP Manage</title>
+  <link rel="icon" href="ahip_logo.png">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="ai.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="ahip_logo.png" alt="AHIP" class="logo">
+      <div>
+        <h1>AHIP Manage <span class="badge">Submitted data</span></h1>
+        <p class="subtitle">Afya-Tek Phase III · AHIP Collect assessments</p>
+      </div>
+    </div>
+    <div class="refresh">
+      <span id="me" class="muted"></span>
+      <button id="logoutBtn" type="button" class="btn ghost-on-dark">Sign out</button>
+    </div>
+  </header>
+  <nav class="tabs" aria-label="Sections">
+    <a href="#data" data-view="data">Submitted data</a>
+    <a href="#users" data-view="users">Users</a>
+    <a href="#settings" data-view="settings">Settings</a>
+    <a href="forms.html">Forms</a>
+    <a href="fhir.html">FHIR data</a>
+  </nav>
+
+  <main>
+   <div id="viewData" class="view">
+    <div class="data-toolbar">
+      <span id="updated" class="muted">Loading…</span>
+      <button id="refreshBtn" type="button" class="btn ghost">Refresh</button>
+    </div>
+    <section class="filters" aria-label="Filters">
+      <label>Date range
+        <select id="fDate">
+          <option value="all">All time</option>
+          <option value="today">Today</option>
+          <option value="7">Last 7 days</option>
+          <option value="30">Last 30 days</option>
+          <option value="90">Last 90 days</option>
+        </select>
+      </label>
+      <label>Tool <select id="fTool"></select></label>
+      <label>Assessment <select id="fAssessment"></select></label>
+      <label>Region <select id="fRegion"></select></label>
+      <label>Council <select id="fCouncil"></select></label>
+      <label>Data collector <select id="fCollector"></select></label>
+      <button id="resetBtn" type="button" class="btn primary">Reset filters</button>
+    </section>
+
+    <div id="error" class="error" role="alert" hidden></div>
+
+    <div id="content">
+      <section class="tiles" aria-label="Summary">
+        <div class="tile hero">
+          <span class="tile-label">Submissions</span>
+          <span class="tile-value" id="tTotal">–</span>
+          <span class="tile-sub" id="tTotalSub"></span>
+        </div>
+        <div class="tile"><span class="tile-label">Today</span><span class="tile-value" id="tToday">–</span></div>
+        <div class="tile"><span class="tile-label">Last 7 days</span><span class="tile-value" id="tWeek">–</span></div>
+        <div class="tile"><span class="tile-label">Data collectors</span><span class="tile-value" id="tCollectors">–</span></div>
+        <div class="tile"><span class="tile-label">Councils covered</span><span class="tile-value" id="tCouncils">–</span></div>
+      </section>
+
+      <section class="card ai-insights" aria-label="AI insights">
+        <div class="ai-insights-head">
+          <div>
+            <h2><span class="ai-spark">✦</span> AI insights</h2>
+            <p class="hint">Analyses exactly what you are looking at: <b id="aiViewText">all submissions</b>.</p>
+          </div>
+          <button id="aiAnalyseBtn" type="button" class="btn primary">Analyse this view</button>
+        </div>
+        <div class="ai-chips">
+          <button type="button" class="ai-chip" data-ai="Find data-quality problems in this view (impossible numbers, missing key answers, duplicates) and say which submissions to check.">Find data problems</button>
+          <button type="button" class="ai-chip" data-ai="Compare the councils in this view: submissions, key answers and anything unusual.">Compare councils</button>
+          <button type="button" class="ai-chip" data-ai="Summarise what respondents said in the open-ended answers and recorded-interview summaries in this view: main themes with examples.">Open-ended answers</button>
+          <button type="button" class="ai-chip" data-ai="Summarise the Likert / agreement answers in this view: where do respondents agree or disagree most?">Likert results</button>
+          <button type="button" class="ai-chip" data-ai="Which data collectors and councils are behind in this view, and what should the team do this week?">What to do next</button>
+        </div>
+      </section>
+
+      <section class="charts">
+        <article class="card">
+          <h2>Submissions by tool</h2>
+          <div class="chart" id="cTool"></div>
+        </article>
+        <article class="card">
+          <h2>Submissions over time</h2>
+          <div class="chart" id="cTime"></div>
+        </article>
+        <article class="card">
+          <h2>Submissions by council</h2>
+          <div class="chart" id="cCouncil"></div>
+        </article>
+        <article class="card">
+          <h2>Submissions by data collector</h2>
+          <div class="chart" id="cCollector"></div>
+        </article>
+        <article class="card" id="quizCard" hidden>
+          <h2>Quiz score by data collector (average %)</h2>
+          <div class="chart" id="cQuiz"></div>
+          <p class="muted" id="quizNote"></p>
+        </article>
+      </section>
+
+      <section class="card">
+        <div class="table-head">
+          <h2>Submissions <span class="muted" id="rowCount"></span></h2>
+          <div class="table-actions">
+            <input id="search" type="search" placeholder="Search site, collector, council…" aria-label="Search submissions">
+            <button id="exportBtn" type="button" class="btn primary">Export CSV</button>
+          </div>
+        </div>
+        <p class="hint" id="exportHint">Tip: choose a tool in the filters to export every question as its own column.</p>
+        <div class="table-wrap">
+          <table class="data">
+            <thead>
+              <tr>
+                <th>Submitted</th><th>Tool</th><th>Site</th><th>Region</th><th>Council</th>
+                <th>Data collector</th><th>Assessment</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button id="prevPage" type="button" class="btn ghost">Previous</button>
+          <span id="pageInfo" class="muted"></span>
+          <button id="nextPage" type="button" class="btn ghost">Next</button>
+        </div>
+      </section>
+    </div>
+   </div>
+
+   <div id="viewUsers" class="view" hidden>
+    <section class="card">
+      <div class="table-head">
+        <div>
+          <h2>Users <span class="muted" id="userCount"></span></h2>
+          <p class="hint">Data collectors are invited by email, choose their own password, then sign in on the AHIP Data Collect app.</p>
+        </div>
+        <button id="addUserBtn" type="button" class="btn primary">Invite user</button>
+      </div>
+      <div id="emailWarning" class="notice" hidden>
+        Email is not set up yet, so invitations cannot be emailed. You can still copy each invitation link and share it, or
+        <a href="#settings">set up email</a>.
+      </div>
+      <div class="table-wrap">
+        <table class="data users">
+          <thead>
+            <tr><th>Name</th><th>Username</th><th>Phone</th><th>Email</th><th>Role</th><th>Status</th><th>Device</th><th>Submissions</th><th>Last sign-in</th><th></th></tr>
+          </thead>
+          <tbody id="userRows"></tbody>
+        </table>
+      </div>
+    </section>
+    <section class="card" style="margin-top:12px">
+      <h2>Blocked phones <span class="muted" id="blockedCount"></span></h2>
+      <p class="hint">A blocked phone cannot use AHIP Collect with any account. Block a phone from its user's row above.</p>
+      <div class="table-wrap">
+        <table class="data users">
+          <thead><tr><th>Phone</th><th>Model</th><th>Last user</th><th>Blocked</th><th>Reason</th><th></th></tr></thead>
+          <tbody id="blockedRows"></tbody>
+        </table>
+      </div>
+    </section>
+   </div>
+
+   <div id="viewSettings" class="view" hidden>
+    <section class="card settings">
+      <h2>Email for invitations</h2>
+      <p class="hint">Invitations are sent from this mailbox. For Gmail: turn on 2-Step Verification, create an <b>App password</b>
+        (Google Account → Security → App passwords) and use it below. Server <code>smtp.gmail.com</code>, port <code>465</code>, SSL.</p>
+      <form id="settingsForm" class="form-grid">
+        <label>Mail server (SMTP host) <input name="host" placeholder="smtp.gmail.com" autocomplete="off"></label>
+        <label>Port <input name="port" type="number" min="1" max="65535" value="465"></label>
+        <label>Security
+          <select name="security">
+            <option value="ssl">SSL / TLS (port 465)</option>
+            <option value="starttls">STARTTLS (port 587)</option>
+          </select>
+        </label>
+        <label>Mailbox username <input name="user" placeholder="you@gmail.com" autocomplete="off"></label>
+        <label>Password / app password <input name="pass" type="password" autocomplete="new-password" placeholder="(unchanged)"></label>
+        <label>Send from address <input name="from" type="email" placeholder="you@gmail.com"></label>
+        <label>Sender name <input name="fromName" placeholder="AHIP Collect"></label>
+        <label class="span2">Dashboard address used in invitation links
+          <input name="publicUrl" placeholder="http://192.168.100.5:8090">
+          <span class="hint">The address of this PC on the office Wi-Fi. Collectors open the invitation link on that Wi-Fi.</span>
+        </label>
+        <div class="span2 form-actions">
+          <button type="submit" class="btn primary">Save settings</button>
+          <span id="settingsMsg" class="muted" role="status"></span>
+        </div>
+      </form>
+      <form id="testEmailForm" class="test-email">
+        <label>Send a test email to <input name="to" type="email" required placeholder="name@example.com"></label>
+        <button type="submit" class="btn ghost">Send test</button>
+        <span id="testMsg" class="muted" role="status"></span>
+      </form>
+    </section>
+   </div>
+  </main>
+
+  <div id="userDrawer" class="drawer" hidden>
+    <div class="drawer-backdrop" data-close-user></div>
+    <aside class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="userDrawerTitle">
+      <div class="drawer-head">
+        <div><h2 id="userDrawerTitle">Invite user</h2><p class="muted" id="userDrawerSub">They will get an email to choose their password.</p></div>
+        <button type="button" class="btn ghost" data-close-user aria-label="Close">Close</button>
+      </div>
+      <div class="drawer-body">
+        <form id="userForm" class="form-stack">
+          <label>Full name <input name="name" required autocomplete="off"></label>
+          <label>Username <input name="username" required autocapitalize="none" spellcheck="false" pattern="[a-z0-9._\-]{3,32}" title="3–32 lowercase letters, numbers, dot, dash or underscore" autocomplete="off"></label>
+          <label>Phone <input name="phone" type="tel" required placeholder="+255712345678" autocomplete="off"></label>
+          <label>Email <input name="email" type="email" required autocomplete="off"></label>
+          <label>Role
+            <select name="role">
+              <option value="collector">Data collector (mobile app)</option>
+              <option value="admin">Administrator (dashboard + mobile app)</option>
+            </select>
+          </label>
+          <p id="userFormError" class="form-error" role="alert" hidden></p>
+          <button type="submit" class="btn primary">Send invitation</button>
+        </form>
+        <div id="inviteResult" class="invite-result" hidden>
+          <p id="inviteResultText"></p>
+          <div class="copy-row">
+            <input id="inviteLink" readonly aria-label="Invitation link">
+            <button id="copyLinkBtn" type="button" class="btn ghost">Copy link</button>
+          </div>
+          <p class="hint">Share this link with the user if the email does not arrive. It works for 7 days, on the office Wi-Fi.</p>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div id="tooltip" class="tooltip" role="status" hidden></div>
+
+  <div id="drawer" class="drawer" hidden>
+    <div class="drawer-backdrop" data-close></div>
+    <aside class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="drawerTitle">
+      <div class="drawer-head">
+        <div>
+          <h2 id="drawerTitle"></h2>
+          <p id="drawerMeta" class="muted"></p>
+        </div>
+        <button type="button" class="btn ghost" data-close aria-label="Close">Close</button>
+      </div>
+      <div id="drawerBody" class="drawer-body"></div>
+    </aside>
+  </div>
+
+  <script src="quiz.js"></script>
+  <script src="app.js"></script>
+  <script src="admin.js"></script>
+  <script src="ai.js"></script>
+</body>
+</html>

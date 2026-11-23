@@ -1,0 +1,52 @@
+# AHIP backend for an online server: run `docker compose up -d --build` in this folder.
+# Only Caddy is reachable from the internet (ports 80/443). The FHIR server and its database
+# stay on the internal network: see DEPLOY.md before letting phones sync over the internet.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: hapi
+      POSTGRES_USER: hapi
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - fhir-db:/var/lib/postgresql/data
+
+  fhir:
+    image: hapiproject/hapi:latest
+    restart: unless-stopped
+    depends_on: [postgres]
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/hapi
+      SPRING_DATASOURCE_USERNAME: hapi
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_DATASOURCE_DRIVERCLASSNAME: org.postgresql.Driver
+      SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: ca.uhn.fhir.jpa.model.dialect.HapiFhirPostgresDialect
+
+  dashboard:
+    build: .
+    restart: unless-stopped
+    depends_on: [fhir]
+    environment:
+      FHIR_URL: http://fhir:8080/fhir
+      DATA_DIR: /data
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
+    volumes:
+      - dashboard-data:/data
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [dashboard]
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+
+volumes:
+  fhir-db:
+  dashboard-data:
+  caddy-data:
