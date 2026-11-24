@@ -24,7 +24,7 @@ function formValues(form) {
 
 async function start() {
   const session = await fetch("/api/session").then((r) => r.json());
-  if (session.user && session.user.role === "admin") {
+  if (session.user && ["admin", "supervisor"].includes(session.user.role)) {
     location.replace("/");
     return;
   }

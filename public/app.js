@@ -695,11 +695,11 @@ window.AHIP = { load, submissionsByUsername, currentView };
 
 async function boot() {
   const session = await fetch("/api/session").then((r) => r.json()).catch(() => ({}));
-  if (!session.user || session.user.role !== "admin") {
+  if (!session.user || !["admin", "supervisor"].includes(session.user.role)) {
     location.replace("/login.html");
     return;
   }
-  $("me").textContent = `Signed in as ${session.user.name}`;
+  $("me").textContent = `Signed in as ${session.user.name}${session.user.role === "supervisor" ? " (Supervisor)" : ""}`;
   window.dispatchEvent(new CustomEvent("ahip:session", { detail: session.user }));
   await load();
   setInterval(() => {

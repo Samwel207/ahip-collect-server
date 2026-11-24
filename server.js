@@ -31,6 +31,7 @@ const TYPES = {
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".png": "image/png",
+  ".webmanifest": "application/manifest+json",
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
 };
@@ -119,10 +120,17 @@ function validateProfile(body, { requireAll = true } = {}) {
     if (!PHONE_RE.test(out.phone)) errors.push("Enter a valid Tanzanian phone number, e.g. +255712345678.");
   }
   if (requireAll || body.role !== undefined) {
-    out.role = body.role === "admin" ? "admin" : "collector";
+    out.role = ROLES.includes(body.role) ? body.role : "collector";
   }
   return { errors, values: out };
 }
+
+/**
+ * Roles: admin = everything in AHIP Manage; supervisor = home page (submitted data, charts, AI) and
+ * the Forms designer only; collector = phone app and AHIP Collect Web, no AHIP Manage.
+ */
+const ROLES = ["collector", "supervisor", "admin"];
+const MANAGE_ROLES = new Set(["admin", "supervisor"]);
 
 function validatePassword(password) {
   if (typeof password !== "string" || password.length < 8) return "Password must be at least 8 characters.";
@@ -189,7 +197,7 @@ function parseCookies(req) {
 function currentUser(req) {
   const token = parseCookies(req).ahip_session;
   const session = token && sessions.get(token);
-  if (!session) return null;
+  if (!session || session.kind === "collect") return null; // web-collection sessions never open AHIP Manage
   if (session.expiresAt < Date.now()) {
     sessions.delete(token);
     return null;
@@ -353,7 +361,7 @@ async function handleApi(req, res, url) {
     const key = `web:${ip}:${username}`;
     if (tooManyFailures(key)) return sendError(res, 429, "Too many attempts. Wait 15 minutes and try again.");
     const user = users.find((u) => u.username === username);
-    if (!user || user.status !== "active" || user.role !== "admin" || !checkPassword(String(body.password || ""), user.passwordHash)) {
+    if (!user || user.status !== "active" || !MANAGE_ROLES.has(user.role) || !checkPassword(String(body.password || ""), user.passwordHash)) {
       recordFailure(key);
       return sendError(res, 401, "Wrong username or password, or this account cannot use the dashboard.");
     }
@@ -519,9 +527,12 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { active, reason });
   }
 
-  // --- admin only below
+  // --- AHIP Collect Web (browser data collection for iPhones): its own sign-in and session
+  if (url.pathname.startsWith("/api/collect/")) return handleCollect(req, res, url, route, ip);
+
+  // --- signed in to AHIP Manage: administrators and supervisors
   if (!me) return sendError(res, 401, "Sign in required.");
-  if (!isAdmin) return sendError(res, 403, "Administrators only.");
+  if (!MANAGE_ROLES.has(me.role)) return sendError(res, 403, "This account cannot use AHIP Manage.");
 
   // --- Forms: design the tool questions (published to the FHIR server; phones get them on Sync)
   if (url.pathname.startsWith("/api/forms")) return handleForms(req, res, url, me);
@@ -537,6 +548,14 @@ async function handleApi(req, res, url) {
       return sendJson(res, error.status || 500, { error: error.message || "The AI assistant failed." });
     }
   }
+
+  // Supervisors only need names for the charts and tables (no contact details, phones or keys).
+  if (route === "GET /api/users" && !isAdmin) {
+    return sendJson(res, 200, { users: users.map((u) => ({ username: u.username, name: u.name, role: u.role })) });
+  }
+
+  // --- administrators only below (users, phones, settings, API keys)
+  if (!isAdmin) return sendError(res, 403, "Administrators only.");
 
   if (route === "GET /api/users") {
     return sendJson(res, 200, { users: users.map(publicUser) });
@@ -602,7 +621,7 @@ async function handleApi(req, res, url) {
       const { errors, values } = validateProfile(body, { requireAll: false });
       if (values.email && users.some((u) => u.id !== user.id && u.email === values.email)) errors.push("A user with that email already exists.");
       if (body.status !== undefined && !["active", "deactivated"].includes(body.status)) errors.push("Unknown status.");
-      if (user.id === me.id && (body.status === "deactivated" || values.role === "collector")) errors.push("You cannot deactivate or demote your own account.");
+      if (user.id === me.id && (body.status === "deactivated" || (values.role && values.role !== "admin"))) errors.push("You cannot deactivate or demote your own account.");
       if (errors.length) return sendError(res, 400, errors.join(" "));
       Object.assign(user, values);
       if (body.status === "deactivated") user.status = "deactivated";
@@ -792,11 +811,136 @@ async function handleForms(req, res, url, me) {
   }
 }
 
+// ---------------------------------------------------------------- AHIP Collect Web
+
+const COLLECTOR_TAG = "urn:ahip:data-collector";
+
+/** The signed-in web data collector (cookie ahip_collect), or null. */
+function collectUser(req) {
+  const token = parseCookies(req).ahip_collect;
+  const session = token && sessions.get(token);
+  if (!session || session.kind !== "collect") return null;
+  if (session.expiresAt < Date.now()) {
+    sessions.delete(token);
+    return null;
+  }
+  const user = users.find((u) => u.id === session.userId);
+  return user && user.status === "active" && !isBlockedUser(user) ? user : null;
+}
+const isBlockedUser = (user) => !!user.signOutRequestedAt;
+
+/** Writes one resource to the FHIR server (used only for web submissions). */
+function fhirPut(resourcePath, resource) {
+  const target = new URL(FHIR_URL.href.replace(/\/$/, "") + resourcePath);
+  const payload = Buffer.from(JSON.stringify(resource));
+  const lib = target.protocol === "https:" ? require("https") : http;
+  return new Promise((resolve, reject) => {
+    const req = lib.request(target, {
+      method: "PUT",
+      timeout: 60000,
+      headers: { Accept: "application/fhir+json", "Content-Type": "application/fhir+json", "Content-Length": payload.length },
+    }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => {
+        let json = null;
+        try { json = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { /* not JSON */ }
+        if (res.statusCode >= 200 && res.statusCode < 300) resolve(json);
+        else reject(new Error(json?.issue?.[0]?.diagnostics || `FHIR server error ${res.statusCode}`));
+      });
+    });
+    req.on("timeout", () => req.destroy(new Error("FHIR server timed out")));
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+const WEB_ID_RE = /^web-[a-z0-9-]{8,60}$/;
+const KEEP_RESPONSE_EXT = new Set(["urn:ahip:quiz-seconds", "urn:ahip:quiz-timed-out"]);
+
+async function handleCollect(req, res, url, route, ip) {
+  try {
+    if (route === "POST /api/collect/login") {
+      const body = await readBody(req);
+      const username = cleanText(body.username, 32).toLowerCase();
+      const key = `collect:${ip}:${username}`;
+      if (tooManyFailures(key)) return sendError(res, 429, "Too many attempts. Wait 15 minutes and try again.");
+      const user = users.find((u) => u.username === username);
+      if (!user || user.status !== "active" || !checkPassword(String(body.password || ""), user.passwordHash)) {
+        recordFailure(key);
+        return sendError(res, 401, "Wrong username or password.");
+      }
+      const token = newToken();
+      sessions.set(token, { userId: user.id, kind: "collect", expiresAt: Date.now() + SESSION_HOURS * 3600 * 1000 });
+      res.setHeader("Set-Cookie", `ahip_collect=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_HOURS * 3600}`);
+      user.lastLoginAt = new Date().toISOString();
+      saveUsers();
+      return sendJson(res, 200, { user: { username: user.username, name: user.name } });
+    }
+    if (route === "POST /api/collect/logout") {
+      const token = parseCookies(req).ahip_collect;
+      if (token) sessions.delete(token);
+      res.setHeader("Set-Cookie", "ahip_collect=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
+      return sendJson(res, 200, { ok: true });
+    }
+
+    const me = collectUser(req);
+    if (!me) return sendError(res, 401, "Sign in required.");
+
+    if (route === "GET /api/collect/session") return sendJson(res, 200, { user: { username: me.username, name: me.name } });
+
+    if (route === "GET /api/collect/forms") {
+      const list = (await forms.allForms()).filter((q) => q.status !== "retired");
+      return sendJson(res, 200, { forms: list });
+    }
+
+    if (route === "GET /api/collect/mine") {
+      const mine = await apiKeys.submissionsFor(me.username);
+      return sendJson(res, 200, { submissions: mine.map(({ id, tool, submitted }) => ({ id, tool, submitted })) });
+    }
+
+    if (route === "POST /api/collect/submit") {
+      const body = JSON.parse((await readRaw(req, 40 * 1024 * 1024)).toString("utf8") || "{}");
+      const r = body.response || {};
+      const id = String(body.id || "");
+      if (!WEB_ID_RE.test(id)) return sendError(res, 400, "Bad submission id.");
+      const formId = String(r.questionnaire || "").replace(/^Questionnaire\//, "");
+      const form = (await forms.allForms()).find((q) => q.id === formId && q.status !== "retired");
+      if (r.resourceType !== "QuestionnaireResponse" || !form) return sendError(res, 400, "Unknown form.");
+      if (!Array.isArray(r.item) || !r.item.length) return sendError(res, 400, "The submission has no answers.");
+      const authored = Date.parse(r.authored) ? new Date(r.authored).toISOString() : new Date().toISOString();
+      const clean = {
+        resourceType: "QuestionnaireResponse",
+        id,
+        meta: {
+          tag: [
+            { system: COLLECTOR_TAG, code: me.username, display: me.username },
+            { system: "https://smartregister.org/app-version", code: "ahip-collect-web", display: "Application Version" },
+          ],
+        },
+        questionnaire: `Questionnaire/${form.id}`,
+        status: "completed",
+        authored,
+        item: r.item,
+      };
+      const ext = (r.extension || []).filter((e) => KEEP_RESPONSE_EXT.has(e.url));
+      if (ext.length) clean.extension = ext;
+      await fhirPut(`/QuestionnaireResponse/${id}`, clean);
+      return sendJson(res, 200, { ok: true, id });
+    }
+    return sendError(res, 404, "Not found.");
+  } catch (error) {
+    console.error("Collect web:", error.message);
+    return sendError(res, error.status || 500, error.message || "Could not process the request.");
+  }
+}
+
 // ---------------------------------------------------------------- FHIR proxy (admins, read-only)
 
 function proxyFhir(req, res) {
   const me = currentUser(req);
-  if (!me || me.role !== "admin") return sendError(res, 401, "Sign in required.");
+  if (!me || !MANAGE_ROLES.has(me.role)) return sendError(res, 401, "Sign in required.");
   if (req.method !== "GET" && req.method !== "HEAD") return sendError(res, 405, "Read-only.");
 
   const incoming = new URL(req.url, "http://dashboard");
@@ -824,7 +968,8 @@ function proxyFhir(req, res) {
 
 function serveStatic(req, res) {
   const urlPath = decodeURIComponent(new URL(req.url, "http://dashboard").pathname);
-  const file = path.normalize(path.join(PUBLIC_DIR, urlPath === "/" ? "index.html" : urlPath));
+  const page = urlPath === "/" ? "index.html" : urlPath === "/collect" || urlPath === "/collect/" ? "collect.html" : urlPath;
+  const file = path.normalize(path.join(PUBLIC_DIR, page));
   if (!file.startsWith(PUBLIC_DIR)) return sendError(res, 403, "Forbidden");
   fs.readFile(file, (err, data) => {
     if (err) {

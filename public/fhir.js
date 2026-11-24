@@ -265,6 +265,7 @@ function closeDrawer() {
 
 async function boot() {
   const session = await fetch("/api/session").then((r) => r.json()).catch(() => ({}));
+  if (session.user?.role === "supervisor") return location.replace("/");
   if (!session.user || session.user.role !== "admin") {
     location.replace("/login.html");
     return;

@@ -1514,8 +1514,9 @@ async function uploadPreview() {
 
 async function boot() {
   const session = await fetch("/api/session").then((r) => r.json()).catch(() => ({}));
-  if (!session.user || session.user.role !== "admin") return location.replace("/login.html");
-  $("me").textContent = `Signed in as ${session.user.name}`;
+  if (!session.user || !["admin", "supervisor"].includes(session.user.role)) return location.replace("/login.html");
+  $("me").textContent = `Signed in as ${session.user.name}${session.user.role === "supervisor" ? " (Supervisor)" : ""}`;
+  window.AHIP_ROLE.apply(session.user);
   await loadTools();
   let saved = null;
   try { saved = localStorage.getItem("ahip-forms-tool"); } catch {}

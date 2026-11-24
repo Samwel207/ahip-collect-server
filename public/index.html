@@ -28,6 +28,7 @@
     <a href="#settings" data-view="settings">Settings</a>
     <a href="forms.html">Forms</a>
     <a href="fhir.html">FHIR data</a>
+    <a href="/collect" target="_blank" rel="noopener" title="Data collection in the browser (for iPhones)">AHIP Collect Web ↗</a>
   </nav>
 
   <main>
@@ -224,8 +225,9 @@
           <label>Email <input name="email" type="email" required autocomplete="off"></label>
           <label>Role
             <select name="role">
-              <option value="collector">Data collector (mobile app)</option>
-              <option value="admin">Administrator (dashboard + mobile app)</option>
+              <option value="collector">Data collector (mobile app and AHIP Collect Web)</option>
+              <option value="supervisor">Supervisor (home page and Forms in AHIP Manage + collection)</option>
+              <option value="admin">Administrator (everything in AHIP Manage + collection)</option>
             </select>
           </label>
           <p id="userFormError" class="form-error" role="alert" hidden></p>
@@ -259,6 +261,7 @@
     </aside>
   </div>
 
+  <script src="role.js"></script>
   <script src="quiz.js"></script>
   <script src="app.js"></script>
   <script src="admin.js"></script>

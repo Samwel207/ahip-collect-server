@@ -26,8 +26,12 @@
   // ---------- navigation
 
   const VIEWS = { data: "viewData", users: "viewUsers", settings: "viewSettings" };
+  const isAdmin = () => me?.role === "admin";
   function showView() {
-    const name = VIEWS[location.hash.slice(1)] ? location.hash.slice(1) : "data";
+    // Supervisors see only the home page here (and the Forms page); Users and Settings are admin-only.
+    const asked = location.hash.slice(1);
+    const name = VIEWS[asked] && (asked === "data" || isAdmin()) ? asked : "data";
+    if (asked && asked !== name) history.replaceState(null, "", "#data");
     Object.entries(VIEWS).forEach(([key, id]) => ($(id).hidden = key !== name));
     document.querySelectorAll(".tabs a").forEach((a) => a.setAttribute("aria-current", a.dataset.view === name ? "page" : "false"));
     if (name === "users") {
@@ -46,7 +50,7 @@
   // ---------- users
 
   const STATUS = { active: "Active", invited: "Invited", deactivated: "Blocked" };
-  const ROLE = { collector: "Data collector", admin: "Administrator" };
+  const ROLE = { collector: "Data collector", supervisor: "Supervisor", admin: "Administrator" };
   const when = (iso) => (iso ? new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "—");
 
   async function loadUsers() {
@@ -402,6 +406,7 @@
 
   window.addEventListener("ahip:session", (e) => {
     me = e.detail;
+    window.AHIP_ROLE.apply(me);
     showView();
   });
 })();

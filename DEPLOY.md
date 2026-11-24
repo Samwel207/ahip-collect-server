@@ -60,6 +60,13 @@ submissions) and **postgres** (FHIR database).
    Excel files exported from the office server), then **Settings** → dashboard address
    `https://<your domain>` and the email (SMTP) settings for invitations.
 
+## AHIP Collect Web and supervisors
+
+- Data collectors with iPhones use `https://<your domain>/collect` (same username and password as the
+  phone app). Over HTTPS the browser allows GPS and audio recording; photos work everywhere.
+- In AHIP Manage > Users, the role **Supervisor** gives the home page and the Forms designer only;
+  **Administrator** gives everything.
+
 ## Updating to a new version
 
 ```bash
