@@ -1701,6 +1701,9 @@ async function uploadPreview() {
 
 // ------------------------------------------------------------------ boot
 
+window.addEventListener("ahip:sync", (e) => e.preventDefault());
+window.AHIP_SYNC = loadTools;
+
 async function boot() {
   const session = await fetch("/api/session").then((r) => r.json()).catch(() => ({}));
   if (!session.user || !["admin", "supervisor"].includes(session.user.role)) return location.replace("/login.html");

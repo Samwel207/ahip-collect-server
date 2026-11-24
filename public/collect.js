@@ -81,6 +81,10 @@
     mic: "M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z",
     place: "M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 0 1 0-5 2.5 2.5 0 0 1 0 5z",
     stop: "M6 6h12v12H6z",
+    translate: "M12.87 15.07l-2.54-2.51.03-.03c1.74-1.94 2.98-4.17 3.71-6.53H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z",
+    bell: "M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z",
+    sync: "M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z",
+    draft: "M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a.996.996 0 0 0 0-1.41l-2.34-2.34a.996.996 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z",
     sparkle: "M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z",
   };
   const SVG_NS = "http://www.w3.org/2000/svg";
@@ -100,7 +104,10 @@
     user: null, server: location.host, forms: [], study: null, assessment: null,
     screen: "loading", tool: null, fill: null, drafts: {}, outbox: [], done: null, review: null,
     mine: null, mineOffline: false, chat: [], syncing: false, syncStatus: null,
+    trOpen: new Set(), listKind: null, returnTo: null,
   };
+  const X = window.AHIP_EXTRAS;
+  let settings = X.defaults();
   let timer = null;
   let recorder = null;
 
@@ -226,8 +233,8 @@
     };
   })();
   const userKey = (k) => `${k}:${state.user?.username || "-"}`;
-  const saveDrafts = () => store.set(userKey("drafts"), state.drafts);
-  const saveOutbox = () => store.set(userKey("outbox"), state.outbox);
+  const saveDrafts = () => { reportPending(); refreshTopIcons(); return store.set(userKey("drafts"), state.drafts); };
+  const saveOutbox = () => { reportPending(); refreshTopIcons(); return store.set(userKey("outbox"), state.outbox); };
 
   // ---------------------------------------------------------------- navigation
   const BACK = { assessment: "study", tools: "assessment", tool: "tools", summary: "study", done: "tools", draftReview: "tools", review: "form", login: "welcome" };
@@ -248,17 +255,151 @@
       if (state.fill.page > 0) { state.fill.page--; state.fill.problems = null; autosave(); render(); return window.scrollTo(0, 0); }
       return confirmLeaveForm();
     }
-    const back = BACK[state.screen];
+    const back = ["settings", "list"].includes(state.screen) ? state.returnTo || "study" : BACK[state.screen];
     if (back) go(back, { push: !fromBrowser });
     else if (fromBrowser) history.pushState({ screen: state.screen }, "");
   }
   function closeOverlays() { document.querySelectorAll(".scrim, .chat, .menu").forEach((n) => n.remove()); }
 
+  const TOP_ICON_SCREENS = new Set(["study", "assessment", "tools", "tool", "summary", "done", "draftReview", "settings", "list"]);
   function bar(title, { back = true, onBack = () => goBack(), right = [], close = false } = {}) {
+    const top = state.user && TOP_ICON_SCREENS.has(state.screen) ? [syncButton(), bellButton()] : [];
     return el("header", { class: "bar" },
       back && el("button", { class: "icon-btn back", "aria-label": close ? "Close" : "Back", onclick: onBack }, icon(close ? "close" : "back")),
       el("h1", { text: title }),
-      right);
+      top, right);
+  }
+
+  /** Sync button at the top of the app: sends waiting forms and gets the latest forms. */
+  function syncButton() {
+    return el("button", { class: `icon-btn sync-ic${state.syncing ? " spinning" : ""}`, "aria-label": "Sync data", title: "Sync data", onclick: () => syncAll(true) }, icon("sync"));
+  }
+  function refreshTopIcons() {
+    document.querySelectorAll(".sync-ic").forEach((b) => b.classList.toggle("spinning", state.syncing));
+    const n = noticeCount();
+    document.querySelectorAll(".bell-ic .badge-n").forEach((b) => { b.textContent = n > 99 ? "99+" : String(n); b.hidden = !n; });
+  }
+
+  // ---------------------------------------------------------------- notifications (bell)
+  const notices = { list: [], seen: null };
+  const noticeKey = (k) => `ahip_web_${k}:${state.user?.username || "-"}`;
+  function loadNotices() {
+    try { notices.list = JSON.parse(localStorage.getItem(noticeKey("notices")) || "[]"); } catch { notices.list = []; }
+    try { notices.seen = JSON.parse(localStorage.getItem(noticeKey("seen")) || "null"); } catch { notices.seen = null; }
+  }
+  function saveNotices() {
+    try {
+      localStorage.setItem(noticeKey("notices"), JSON.stringify(notices.list.slice(0, 30)));
+      localStorage.setItem(noticeKey("seen"), JSON.stringify(notices.seen));
+    } catch { /* storage full or blocked */ }
+  }
+  /** Compares the forms from the server with the last ones seen: new, updated or removed by the admin. */
+  function trackFormUpdates(forms) {
+    const version = (q) => q.meta?.versionId || q.meta?.lastUpdated || "";
+    const label = (q) => `Tool ${toolNumber(q)}: ${toolTitle(q)}`;
+    if (!notices.seen) {
+      notices.seen = Object.fromEntries(forms.map((q) => [q.id, { v: version(q), label: label(q) }]));
+      return saveNotices();
+    }
+    const fresh = [];
+    const at = new Date().toISOString();
+    forms.forEach((q) => {
+      const old = notices.seen[q.id];
+      if (!old) fresh.push({ id: uuid(), at, formId: q.id, kind: "new", text: `New form from the admin: ${label(q)}` });
+      else if (old.v !== version(q)) fresh.push({ id: uuid(), at, formId: q.id, kind: "updated", text: `The admin updated ${label(q)}` });
+      notices.seen[q.id] = { v: version(q), label: label(q) };
+    });
+    Object.keys(notices.seen).forEach((id) => {
+      if (!forms.some((q) => q.id === id)) {
+        fresh.push({ id: uuid(), at, formId: id, kind: "removed", text: `The admin removed ${notices.seen[id].label || id}` });
+        delete notices.seen[id];
+      }
+    });
+    if (fresh.length) {
+      notices.list = [...fresh, ...notices.list].slice(0, 30);
+      toast(fresh.length === 1 ? `${fresh[0].text}. Tap the bell for details.` : `${fresh.length} updates from the admin. Tap the bell for details.`, 4000);
+    }
+    saveNotices();
+    refreshTopIcons();
+  }
+  /** Forms the admin returned for correction: they become drafts here, with the admin's explanation. */
+  async function fetchReturned() {
+    let list;
+    try { list = (await api("GET", "/api/collect/returned")).returned || []; } catch { return; }
+    let handled = [];
+    try { handled = JSON.parse(localStorage.getItem(noticeKey("returned")) || "[]"); } catch {}
+    let added = 0;
+    for (const r of list) {
+      const info = (() => { try { return JSON.parse((r.extension || []).filter((e) => e.url === "urn:ahip:returned").pop()?.valueString || "{}"); } catch { return {}; } })();
+      const key = `${r.id}|${info.at || ""}`;
+      // Already on this phone (draft or waiting to send): leave the collector's work alone.
+      if (state.drafts[r.id] || state.outbox.some((o) => o.id === r.id)) continue;
+      const formId = String(r.questionnaire || "").replace(/^Questionnaire\//, "");
+      const form = state.forms.find((q) => q.id === formId);
+      if (!form) continue;
+      const answers = new Map();
+      const walk = (items) => (items || []).forEach((i) => {
+        if (i.answer?.length && !answers.has(i.linkId)) answers.set(i.linkId, i.answer.map(({ item, ...a }) => a));
+        walk(i.item);
+        (i.answer || []).forEach((a) => walk(a.item));
+      });
+      walk(r.item);
+      const now = new Date().toISOString();
+      state.drafts[r.id] = { id: r.id, formId, answers: [...answers.entries()], page: 0, startedAt: Date.now(), updatedAt: now, returned: { reason: info.reason || "", by: info.by || "the admin", at: info.at || now } };
+      const site = draftSite({ answers: [...answers.entries()] });
+      if (!handled.includes(key)) notices.list.unshift({ id: uuid(), at: now, formId, kind: "returned", text: `${info.by || "The admin"} returned Tool ${toolNumber(form)}${site ? ` (${site})` : ""}: ${info.reason || "please check and correct"}` });
+      if (!handled.includes(key)) handled.push(key);
+      added++;
+    }
+    if (!added) return;
+    try { localStorage.setItem(noticeKey("returned"), JSON.stringify(handled.slice(-200))); } catch {}
+    saveNotices();
+    await saveDrafts();
+    toast(added === 1 ? "The admin returned a form to correct. Find it under Drafts." : `The admin returned ${added} forms to correct. Find them under Drafts.`, 4500);
+    if (["tools", "study", "summary", "list"].includes(state.screen)) render();
+  }
+
+  const unreadNotices = () => notices.list.filter((n) => !n.read).length;
+  const noticeCount = () => unreadNotices() + Object.keys(state.drafts).length + state.outbox.length;
+
+  function bellButton() {
+    const n = noticeCount();
+    return el("button", { class: "icon-btn bell-ic", "aria-label": `Notifications${n ? ` (${n})` : ""}`, title: "Notifications", onclick: (e) => { e.stopPropagation(); openNotices(); } },
+      icon("bell"), el("span", { class: "badge-n", hidden: !n, text: n > 99 ? "99+" : String(n) }));
+  }
+
+  function openNotices() {
+    closeOverlays();
+    const drafts = Object.values(state.drafts);
+    const rows = [];
+    const row = (iconName, cls, title, sub, onClick, unread = false) => el("button", { class: `notice${unread ? " unread" : ""}`, onclick: () => { sheet.remove(); onClick(); } },
+      el("span", { class: `n-ic ${cls}` }, icon(iconName)), el("span", { class: "grow" }, el("div", { class: "t", text: title }), sub && el("div", { class: "s", text: sub })), icon("chevron", "chev"));
+    if (state.outbox.length) rows.push(row("cloud", "wait", `${plural(state.outbox.length, "form is", "forms are")} saved but not synced`, "Tap to sync now. Your data is safe on this phone.", () => syncAll(true)));
+    if (drafts.length) rows.push(row("draft", "draft", `${plural(drafts.length, "draft is", "drafts are")} not submitted`, "Tap to open your drafts and finish them.", () => go("tools")));
+    notices.list.forEach((n) => rows.push(row(n.kind === "removed" ? "error" : "description", n.kind === "removed" ? "bad" : "info", n.text, fmtWhen(n.at), () => {
+      n.read = true; saveNotices();
+      if (n.kind === "returned") go("tools");
+      else if (n.kind !== "removed" && state.forms.some((q) => q.id === n.formId)) { state.tool = n.formId; go("tool"); } else render();
+    }, !n.read)));
+    const sheet = el("div", { class: "scrim", onclick: (e) => { if (e.target === sheet) { sheet.remove(); markAllRead(); } } },
+      el("div", { class: "dialog notices", role: "dialog", "aria-modal": "true", "aria-label": "Notifications" },
+        el("h3", { text: "Notifications" }),
+        rows.length ? el("div", { class: "notice-list" }, rows) : el("p", { text: "You are all caught up: no drafts, nothing waiting to sync and no new updates from the admin." }),
+        el("div", { class: "actions row" },
+          notices.list.length > 0 && el("button", { onclick: () => { notices.list = []; saveNotices(); sheet.remove(); render(); } }, "Clear updates"),
+          el("button", { onclick: () => { sheet.remove(); markAllRead(); } }, "Close"))));
+    document.body.append(sheet);
+  }
+  function markAllRead() { notices.list.forEach((n) => (n.read = true)); saveNotices(); refreshTopIcons(); }
+
+  /** Tells AHIP Manage how many drafts / unsent forms are on this phone (for the admin's "Saved, not synced" card). */
+  let pendingTimer = null;
+  function reportPending() {
+    clearTimeout(pendingTimer);
+    pendingTimer = setTimeout(() => {
+      if (!state.user) return;
+      api("POST", "/api/collect/pending", { drafts: Object.keys(state.drafts).length, unsynced: state.outbox.length }).catch(() => {});
+    }, 2000);
   }
   const bottom = (...buttons) => el("div", { class: "bottom" }, el("div", { class: "bottom-inner" }, buttons));
   const pill = (text, onclick, { cls = "", arrow = true, lead = null, disabled = false } = {}) =>
@@ -273,6 +414,8 @@
         el("div", { class: "info", text: `Signed in as ${state.user?.name || state.user?.username || ""}` }),
         el("div", { class: "info", text: `Server: ${state.server}` }),
         el("button", { role: "menuitem", onclick: () => { m.remove(); syncAll(true); } }, "Sync data"),
+        el("button", { role: "menuitem", onclick: () => { m.remove(); openSettings(); } }, "Settings"),
+        el("button", { role: "menuitem", onclick: () => { m.remove(); openNotices(); } }, `Notifications${noticeCount() ? ` (${noticeCount()})` : ""}`),
         el("button", { role: "menuitem", onclick: () => { m.remove(); shareDialog(); } }, "Share my data (API key)"),
         el("button", { role: "menuitem", onclick: () => { m.remove(); signOut(); } }, "Log out"));
       document.body.append(m);
@@ -388,6 +531,8 @@
   async function startAs(user, server) {
     state.user = user;
     if (server) state.server = server;
+    settings = X.load(user.username);
+    loadNotices();
     state.drafts = (await store.get(userKey("drafts"))) || {};
     state.outbox = (await store.get(userKey("outbox"))) || [];
     state.study = localStorage.getItem("ahip_web_study") || STUDIES[0].id;
@@ -396,6 +541,7 @@
     history.replaceState({ screen: "study" }, "");
     go("study", { push: false });
     if (state.outbox.length) syncAll(false);
+    reportPending();
   }
 
   async function loadForms(announce) {
@@ -403,6 +549,8 @@
       const { forms } = await api("GET", "/api/collect/forms");
       state.forms = forms;
       await store.set("forms", forms);
+      trackFormUpdates(forms);
+      fetchReturned();
       if (announce) toast("Forms are up to date.");
     } catch (e) {
       if (e.status === 401) { state.screen = "login"; renderLogin("Please sign in again."); return "signin"; }
@@ -477,7 +625,8 @@
               el("div", {},
                 el("div", { class: "t", text: `Tool ${t.number}: ${t.title}` }),
                 el("div", { class: "site", text: draftSite(d) || "No site name yet" }),
-                el("div", { class: "when", text: `${plural(n, "answer", "answers")} · saved ${fmtSaved(d.updatedAt)}` }))),
+                el("div", { class: "when", text: `${plural(n, "answer", "answers")} · saved ${fmtSaved(d.updatedAt)}` })),
+              d.returned && el("div", { class: "returned-note" }, el("b", { text: `Returned by ${d.returned.by}: ` }), d.returned.reason)),
             el("div", { class: "actions" },
               el("button", { class: "text-link", onclick: () => dialog("Delete this draft?", el("p", { text: "The answers saved in this draft will be removed from the phone. This cannot be undone." }),
                 [["Cancel", () => true], ["Delete", () => { delete state.drafts[d.id]; saveDrafts(); render(); }, "danger"]], { row: true }) }, "Delete"),
@@ -523,14 +672,14 @@
       ["ahip-study", [{ valueString: state.study }]],
       ["ahip-assessment", [{ valueString: state.assessment }]],
     ]);
-    state.fill = { id: `web-${uuid()}`, form, answers, page: 0, startedAt: Date.now(), problems: null, dirty: false, saved: false };
+    state.fill = { id: `web-${uuid()}`, form: X.apply(form, settings, answers), answers, page: 0, startedAt: Date.now(), problems: null, dirty: false, saved: false };
     go("form");
   }
 
   function resumeFill(d, page = null) {
     const form = state.forms.find((q) => q.id === d.formId);
     if (!form) return toast("This form is no longer available.");
-    state.fill = { id: d.id, form, answers: new Map(d.answers), page: page ?? 0, startedAt: d.startedAt || Date.now(), problems: null, dirty: false, saved: true };
+    state.fill = { id: d.id, form: X.apply(form, settings, new Map(d.answers)), answers: new Map(d.answers), page: page ?? 0, startedAt: d.startedAt || Date.now(), problems: null, dirty: false, saved: true };
     go("form");
   }
 
@@ -540,7 +689,7 @@
     if (!f || (!f.saved && !f.dirty)) return;
     clearTimeout(saveTimer);
     const write = () => {
-      state.drafts[f.id] = { id: f.id, formId: f.form.id, answers: [...f.answers.entries()], page: f.page, startedAt: f.startedAt, updatedAt: new Date().toISOString() };
+      state.drafts[f.id] = { ...(state.drafts[f.id]?.returned ? { returned: state.drafts[f.id].returned } : {}), id: f.id, formId: f.form.id, answers: [...f.answers.entries()], page: f.page, startedAt: f.startedAt, updatedAt: new Date().toISOString() };
       f.saved = true;
       saveDrafts();
     };
@@ -722,9 +871,69 @@
 
   function renderItems(items, container, problems) {
     items.forEach((i) => {
-      if (!enabled(i) || isHidden(i) || isFlyover(i)) return;
-      container.append(renderItem(i, problems));
+      if (!enabled(i) || isHidden(i) || isFlyover(i) || X.extraFor(i)) return;
+      const card = renderItem(i, problems);
+      const extras = items.filter((x) => X.extraFor(x) === i.linkId && enabled(x));
+      if (extras.length) card.append(renderExtras(extras, problems));
+      container.append(card);
     });
+  }
+
+  /** "Photo" and "Voice note + label" chosen for this question in Settings. */
+  function renderExtras(extras, problems) {
+    const box = el("div", { class: "extras" });
+    extras.forEach((x) => {
+      const answers = state.fill.answers.get(x.linkId) || [];
+      const kind = kindOf(x);
+      if (kind === "photo") box.append(el("div", { class: "extra" }, el("div", { class: "x-t" }, icon("camera"), "Photo for this question"), renderPhoto(x, answers)));
+      else if (kind === "audio") box.append(el("div", { class: "extra" }, el("div", { class: "x-t" }, icon("mic"), "Voice note for this question"), renderAudio(x, answers)));
+      else {
+        const v = answers[0]?.valueString ?? "";
+        box.append(el("label", { class: "extra" }, el("div", { class: "x-t" }, "Label for the voice note (short text)"),
+          el("input", { class: "tf", type: "text", maxlength: 80, value: v, placeholder: "e.g. Pharmacist explains stock-outs",
+            oninput: (e) => setAnswer(x.linkId, e.target.value.trim() ? [{ valueString: e.target.value }] : [], false) })));
+      }
+      if (problems.get(x.linkId)) box.append(el("div", { class: "msg", text: problems.get(x.linkId) }));
+    });
+    return box;
+  }
+
+  // ---------------------------------------------------------------- translation (Settings > Translate questions)
+  const translations = {}; // formId -> { texts, options } in the chosen language
+  async function loadTranslation(form) {
+    const key = `tr:${settings.lang}:${form.id}`;
+    const version = form.meta?.versionId || "";
+    const saved = await store.get(key);
+    if (saved && saved.version === version) return (translations[form.id] = saved);
+    try {
+      const t = await api("POST", "/api/collect/translate", { formId: form.id, lang: settings.lang });
+      t.version = version;
+      if (t.complete !== false) await store.set(key, t); // incomplete: ask again next time
+      return (translations[form.id] = t);
+    } catch (e) {
+      if (saved) return (translations[form.id] = saved);
+      throw e;
+    }
+  }
+  const trOf = (linkId) => {
+    const base = String(linkId).replace(/__(photo|audio|rec_label)$/, "");
+    return state.fill && translations[state.fill.form.id]?.lang === settings.lang ? translations[state.fill.form.id].texts?.[base] : null;
+  };
+  const trOption = (i, code) => (settings.translate && state.trOpen.has(i.linkId) && translations[state.fill?.form.id]?.options?.[i.linkId]?.[code]) || null;
+
+  function translateRow(i) {
+    if (!settings.translate || !state.fill) return null;
+    const open = state.trOpen.has(i.linkId);
+    const text = open ? trOf(i.linkId) : null;
+    return el("div", { class: "tr-row" },
+      el("button", { type: "button", class: `tr-btn${open ? " on" : ""}`, "aria-pressed": String(open), onclick: async (e) => {
+        if (open) { state.trOpen.delete(i.linkId); return renderPreserveScroll(); }
+        e.currentTarget.disabled = true;
+        try { await loadTranslation(state.fill.form); state.trOpen.add(i.linkId); }
+        catch (err) { toast(err.status === 429 ? err.message : "Translation needs the internet the first time. Try again when online."); }
+        renderPreserveScroll();
+      } }, icon("translate"), open ? "Hide translation" : settings.lang === "sw" ? "Translate (Kiswahili)" : "Translate (English)"),
+      text && el("p", { class: "tr", lang: settings.lang, text }));
   }
 
   const optionClass = (on) => `opt${on ? " on" : ""}`;
@@ -734,8 +943,10 @@
     const f = state.fill;
     const err = problems.get(i.linkId) || "";
     const card = el("section", { class: `q${err ? " err" : ""}${kind === "note" ? " note" : ""}`, "data-link": i.linkId });
-    if (kind === "note") { card.append(el("div", { text: i.text || "" })); return card; }
+    if (kind === "note") { card.append(el("div", { text: i.text || "" })); const tr = translateRow(i); if (tr) card.append(tr); return card; }
     card.append(el("div", { class: "label" }, i.prefix ? `${i.prefix} ` : "", i.text || "", i.required ? " *" : ""));
+    const tr = translateRow(i);
+    if (tr) card.append(tr);
     const hint = hintOf(i);
     if (hint) card.append(el("p", { class: "hint", text: hint }));
     const answers = f.answers.get(i.linkId) || [];
@@ -786,7 +997,7 @@
       case "radio": case "linear": {
         const wrap = el("div", { class: kind === "linear" && opts.length <= 11 ? "opts-row" : "" });
         opts.forEach((o) => wrap.append(el("label", { class: optionClass(value === o.code) },
-          el("input", { type: "radio", name, checked: value === o.code, onchange: () => setAnswer(i.linkId, [coding(o)]) }), o.display)));
+          el("input", { type: "radio", name, checked: value === o.code, onchange: () => setAnswer(i.linkId, [coding(o)]) }), el("span", {}, o.display, trOption(i, o.code) && el("span", { class: "tr-opt", text: trOption(i, o.code) })))));
         card.append(wrap);
         break;
       }
@@ -796,14 +1007,14 @@
           el("input", { type: "checkbox", checked: codes.includes(o.code), onchange: (e) => {
             const keep = answers.filter((a) => a.valueCoding?.code !== o.code);
             setAnswer(i.linkId, e.target.checked ? [...keep, coding(o)] : keep);
-          } }), o.display)));
+          } }), el("span", {}, o.display, trOption(i, o.code) && el("span", { class: "tr-opt", text: trOption(i, o.code) })))));
         break;
       }
       case "dropdown":
         card.append(el("select", { class: "tf", onchange: (e) => {
           const o = opts.find((x) => x.code === e.target.value);
           setAnswer(i.linkId, o ? [coding(o)] : []);
-        } }, el("option", { value: "" }, ""), opts.map((o) => el("option", { value: o.code, selected: value === o.code }, o.display))));
+        } }, el("option", { value: "" }, ""), opts.map((o) => el("option", { value: o.code, selected: value === o.code }, trOption(i, o.code) ? `${o.display} (${trOption(i, o.code)})` : o.display))));
         break;
       case "grid": card.append(renderGrid(i, problems)); break;
       case "table": card.append(renderTable(i, problems)); break;
@@ -1072,7 +1283,7 @@
       title: "Review draft",
       head: `Tool ${t.number}: ${t.title}`,
       sub: draftSite(d) || "No site name yet",
-      lines: reviewLines(form, new Map(d.answers)),
+      lines: reviewLines(X.apply(form, settings, new Map(d.answers)), new Map(d.answers)),
       onEdit: (l) => { resumeFill(d, l.page); setTimeout(() => document.querySelector(`[data-link="${CSS.escape(l.item.linkId)}"]`)?.scrollIntoView({ block: "center" }), 80); },
       bottomBtn: bottom(pill("Continue from the start", () => resumeFill(d), { cls: "purple" })),
     }));
@@ -1174,6 +1385,7 @@
     if (!state.user || state.syncing) return;
     state.syncing = true;
     state.syncStatus = "running";
+    refreshTopIcons();
     if (["done", "summary"].includes(state.screen)) render();
     let result = "ok";
     for (const entry of [...state.outbox]) {
@@ -1186,7 +1398,9 @@
     if (result === "signin") toast("Please log in again to sync.");
     else if (announce) toast(result === "ok" ? "Synced to the AHIP database" : "Sync failed. Your data is safe on this device; try again when you are online.");
     if (result === "ok") { state.mine = null; state.mineOffline = false; }
-    if (["done", "summary", "tools"].includes(state.screen)) render();
+    refreshTopIcons();
+    reportPending();
+    if (["done", "summary", "tools", "list"].includes(state.screen)) render();
   }
   window.addEventListener("online", () => state.outbox.length && syncAll(false));
 
@@ -1243,7 +1457,7 @@
     const counts = new Map(all.map((t) => [t.q.id, 0]));
     mine.forEach((m) => counts.set(m.formId, (counts.get(m.formId) || 0) + 1));
     const max = Math.max(1, ...counts.values());
-    const stat = (iconName, cls, value, label, color) => el("div", { class: "stat" },
+    const stat = (iconName, cls, value, label, color, kind) => el("button", { class: "stat", type: "button", "aria-label": `${label}: ${value}. Show them`, onclick: () => openList(kind) },
       el("span", { class: `tile ${cls}`.trim() }, icon(iconName)),
       el("div", {}, el("div", { class: "v", style: `color:${color}`, text: value }), el("div", { class: "l", text: label })));
     const assessmentName = (id) => { const a = ASSESSMENTS.find((x) => x.id === id); return a ? `${a.title} (${a.period})` : id || ""; };
@@ -1257,10 +1471,11 @@
         el("p", { class: "muted", style: "margin:0 0 4px;font-size:17px", text: `Data collector: ${state.user?.name || state.user?.username || ""}` }),
         state.mineOffline && el("p", { class: "muted", text: "Offline: showing what is on this phone." }),
         el("div", { class: "stats" },
-          stat("clipboard", "", mine.length, "Total submitted", "var(--navy)"),
-          stat("today", "green", mine.filter((m) => when(m) >= today).length, "Today", "var(--green)"),
-          stat("week", "purple", mine.filter((m) => when(m) >= week).length, "Last 7 days", "var(--purple)"),
-          stat("cloud", "green", state.outbox.length, "Waiting to sync", "var(--green)")),
+          stat("clipboard", "", mine.length + state.outbox.length, "Submitted", "var(--navy)", "submitted"),
+          stat("draft", "purple", Object.keys(state.drafts).length, "Drafts", "var(--purple)", "drafts"),
+          stat("cloud", state.outbox.length ? "purple" : "green", state.outbox.length, "Saved, not synced", state.outbox.length ? "var(--purple)" : "var(--green)", "unsynced"),
+          stat("cloudDone", "green", mine.length, "Synced", "var(--green)", "synced")),
+        el("p", { class: "muted stat-note", text: `Today: ${mine.filter((m) => when(m) >= today).length} · Last 7 days: ${mine.filter((m) => when(m) >= week).length} · Tap a card to see those forms` }),
         el("section", { class: "ai-card" },
           el("h3", {}, icon("sparkle"), "AI assistant"),
           el("p", { text: "Quick analysis of the forms YOU submitted: progress, CPPs covered and answers to check." }),
@@ -1330,6 +1545,143 @@
     if (question) ask(question); else setTimeout(() => input.focus(), 50);
   }
 
+  // ---------------------------------------------------------------- Settings (☰ menu > Settings)
+  function openSettings() {
+    if (!["settings", "list"].includes(state.screen)) state.returnTo = TOP_ICON_SCREENS.has(state.screen) ? state.screen : "study";
+    go("settings");
+  }
+
+  function renderSettings() {
+    setTimeout(filterQuestions, 0);
+    const saveSettings = () => { X.save(state.user.username, settings); renderPreserveScroll(); };
+    const seg = (options, current, onPick, label) => el("div", { class: "seg", role: "radiogroup", "aria-label": label },
+      options.map(([v, text]) => el("button", { type: "button", role: "radio", "aria-checked": String(current === v), class: current === v ? "on" : "", onclick: () => onPick(v) }, text)));
+    const list = tools();
+    if (!list.some((t) => t.q.id === state.settingsForm)) state.settingsForm = list[0]?.q.id || null;
+    const form = state.forms.find((q) => q.id === state.settingsForm);
+    const questions = form ? X.questions(form) : [];
+    const chosen = (form && settings.extras[form.id]) || {};
+    const toggle = (linkId, what) => {
+      const all = (settings.extras[form.id] ||= {});
+      const c = (all[linkId] ||= {});
+      c[what] = !c[what];
+      if (!c.photo && !c.voice) delete all[linkId];
+      if (!Object.keys(all).length) delete settings.extras[form.id];
+      saveSettings();
+    };
+    const picked = Object.keys(chosen).length;
+    let section = null;
+    $app.replaceChildren(
+      bar("Settings"),
+      el("main", { class: "screen settings" },
+        el("section", { class: "set-card" },
+          el("h3", {}, "Appearance"),
+          el("p", { class: "muted", text: "Light or dark screens. System follows the phone's own setting." }),
+          seg([["system", "System"], ["light", "Light"], ["dark", "Dark"]], settings.theme, (v) => { settings.theme = v; saveSettings(); }, "Appearance")),
+        el("section", { class: "set-card" },
+          el("h3", {}, icon("translate"), "Translate questions"),
+          el("label", { class: "switch-row" },
+            el("span", { class: "grow" },
+              el("div", { class: "t", text: "Show a Translate button under each question" }),
+              el("div", { class: "s", text: "Tap it to see the question and its answers in small italic text. The first time for each form it needs the internet; after that it works offline." })),
+            el("input", { type: "checkbox", class: "switch", checked: settings.translate, onchange: (e) => { settings.translate = e.target.checked; saveSettings(); } })),
+          settings.translate && seg([["sw", "Kiswahili"], ["en", "English"]], settings.lang, (v) => { settings.lang = v; state.trOpen.clear(); saveSettings(); }, "Translate into")),
+        el("section", { class: "set-card" },
+          el("h3", {}, icon("camera"), "Photo & voice note on questions"),
+          el("p", { class: "muted", text: "Choose the questions that need a photo (📷) or a voice note with a short label (🎤). They appear under those questions when you fill the form. Drafts keep them: come back later, listen to the voice note, finish the form, then save or sync." }),
+          list.length
+            ? el("select", { class: "tf", "aria-label": "Form", onchange: (e) => { state.settingsForm = e.target.value; state.settingsQuery = ""; state.settingsOpen = true; renderSettings(); } },
+              list.map((t) => el("option", { value: t.q.id, selected: t.q.id === state.settingsForm }, `Tool ${t.number}: ${t.title}`)))
+            : el("p", { text: "No forms on this phone yet: tap Sync at the top first." }),
+          form && el("div", { class: "xq-head" },
+            el("span", { class: "grow", text: picked ? `${plural(picked, "question", "questions")} chosen in this form` : "No questions chosen in this form" }),
+            picked > 0 && el("button", { type: "button", class: "text-link", onclick: () => { delete settings.extras[form.id]; saveSettings(); } }, "Clear")),
+          form && questions.length > 0 && el("div", { class: "xq-tools" },
+            el("input", { class: "tf xq-search", type: "search", inputmode: "search", placeholder: "Search by question number (e.g. 12) or words", "aria-label": "Search questions",
+              value: state.settingsQuery || "",
+              oninput: (e) => { state.settingsQuery = e.target.value; state.settingsOpen = true; filterQuestions(); } }),
+            el("button", { type: "button", class: "xq-toggle", "aria-expanded": String(!!state.settingsOpen), onclick: () => { state.settingsOpen = !state.settingsOpen; filterQuestions(); } })),
+          form && el("div", { class: "xq-list" }, questions.flatMap((q) => {
+            const c = chosen[q.linkId] || {};
+            const out = [];
+            if (q.section && q.section !== section) { section = q.section; out.push(el("div", { class: "rsection", text: q.section })); }
+            out.push(el("div", { class: "xq", "data-num": String(q.prefix || "").replace(/\.$/, ""), "data-text": `${q.prefix || ""} ${q.text}`.toLowerCase() },
+              el("div", { class: "grow q-t", text: `${q.prefix ? q.prefix + " " : ""}${q.text}` }),
+              el("button", { type: "button", class: `xq-btn${c.photo ? " on" : ""}`, "aria-pressed": String(!!c.photo), "aria-label": `Photo for: ${q.text}`, title: "Photo", onclick: () => toggle(q.linkId, "photo") }, icon("camera")),
+              el("button", { type: "button", class: `xq-btn${c.voice ? " on" : ""}`, "aria-pressed": String(!!c.voice), "aria-label": `Voice note for: ${q.text}`, title: "Voice note + label", onclick: () => toggle(q.linkId, "voice") }, icon("mic"))));
+            return out;
+          })))));
+  }
+
+  /** Settings: question list shown / hidden, and filtered by number or words. */
+  function filterQuestions() {
+    const list = document.querySelector(".xq-list");
+    const toggle = document.querySelector(".xq-toggle");
+    if (!list || !toggle) return;
+    const query = String(state.settingsQuery || "").trim().toLowerCase();
+    const num = query.replace(/\.$/, "");
+    let shown = 0;
+    let section = null;
+    [...list.children].forEach((row) => {
+      if (row.classList.contains("rsection")) { section = row; row.hidden = true; return; }
+      const match = !query || (/^[0-9.]+$/.test(num) ? (row.dataset.num === num || row.dataset.num.startsWith(num + ".")) : row.dataset.text.includes(query));
+      row.hidden = !match;
+      if (match) { shown++; if (section) section.hidden = false; }
+    });
+    list.hidden = !state.settingsOpen;
+    toggle.setAttribute("aria-expanded", String(!!state.settingsOpen));
+    toggle.textContent = `${state.settingsOpen ? "▾ Hide" : "▸ Show"} questions (${shown}${query ? " found" : ""})`;
+  }
+
+  // ---------------------------------------------------------------- the forms behind a summary card
+  function openList(kind) {
+    state.listKind = kind;
+    if (!["settings", "list"].includes(state.screen)) state.returnTo = state.screen;
+    go("list");
+  }
+
+  function renderList() {
+    const kind = state.listKind || "submitted";
+    const titles = { submitted: "Submitted forms", drafts: "Drafts (not submitted)", unsynced: "Saved, not synced", synced: "Synced forms" };
+    const assessmentName = (id) => { const a = ASSESSMENTS.find((x) => x.id === id); return a ? `${a.title} (${a.period})` : id || ""; };
+    const toolFor = (formId, fallback) => { const form = state.forms.find((q) => q.id === formId); return form ? toolOf(form) : { number: 0, title: fallback || "", icon: "description" }; };
+    const outbox = state.outbox.map((o) => ({ formId: o.formId, site: o.site, assessment: o.assessment, submitted: o.savedAt, synced: false }));
+    const synced = (state.mine || []).map((m) => ({ ...m, synced: true }));
+    const subRow = (r) => {
+      const t = toolFor(r.formId, r.tool);
+      return el("div", { class: "recent" }, tile(t),
+        el("div", { class: "grow" },
+          el("div", { class: "t", text: r.site || `Tool ${t.number}: ${t.title}` }),
+          el("div", { class: "s", text: [`Tool ${t.number}`, assessmentName(r.assessment), fmtWhen(r.submitted)].filter(Boolean).join(" · ") })),
+        icon(r.synced ? "cloudDone" : "cloud", `cloud${r.synced ? "" : " wait"}`));
+    };
+    let body;
+    if (kind === "drafts") {
+      const drafts = Object.values(state.drafts).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      body = drafts.length ? drafts.map((d) => {
+        const t = toolFor(d.formId);
+        return el("div", { class: "draft" },
+          el("div", { class: "top" }, tile(t), el("div", {},
+            el("div", { class: "t", text: `Tool ${t.number}: ${t.title}` }),
+            el("div", { class: "site", text: draftSite(d) || "No site name yet" }),
+            el("div", { class: "when", text: `${plural(answeredCount(d.answers), "answer", "answers")} · saved ${fmtSaved(d.updatedAt)}` })),
+            d.returned && el("div", { class: "returned-note" }, el("b", { text: `Returned by ${d.returned.by}: ` }), d.returned.reason)),
+          el("div", { class: "actions" },
+            el("button", { class: "small-pill", onclick: () => { state.review = d.id; go("draftReview"); } }, "Review & edit"),
+            el("button", { class: "small-pill solid", onclick: () => resumeFill(d) }, "Continue")));
+      }) : [el("p", { class: "muted", text: "No drafts: every form you started has been submitted." })];
+    } else {
+      const rows = kind === "unsynced" ? outbox : kind === "synced" ? synced : [...outbox, ...synced];
+      body = [el("section", { class: "sec-card" }, el("div", { class: "sec-body" },
+        rows.length ? rows.map(subRow) : el("p", { class: "muted", text: kind === "unsynced" ? "Nothing waiting: everything is on the AHIP server." : "No forms here yet." })))];
+      if (kind !== "unsynced" && state.mineOffline) body.unshift(el("p", { class: "muted", text: "Offline: synced forms will show when you are online." }));
+    }
+    $app.replaceChildren(...[
+      bar(titles[kind]),
+      el("main", { class: "screen stack" }, body),
+      kind === "unsynced" && state.outbox.length > 0 && bottom(pill(state.syncing ? "Syncing…" : "Sync to AHIP Database", () => syncAll(true), { cls: "purple", lead: "upload", disabled: state.syncing }))].filter(Boolean));
+  }
+
   // ---------------------------------------------------------------- render + boot
   function render() {
     switch (state.screen) {
@@ -1344,6 +1696,8 @@
       case "draftReview": return renderDraftReview();
       case "done": return renderDone();
       case "summary": return renderSummary();
+      case "settings": return renderSettings();
+      case "list": return renderList();
       default: return renderWelcome();
     }
   }

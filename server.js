@@ -264,6 +264,8 @@ const recordFailure = (key) => failures.set(key, [...(failures.get(key) || []), 
 // ---------------------------------------------------------------- HTTP helpers
 
 function sendJson(res, status, body) {
+  // A reply already started (e.g. a proxied FHIR page cut off half-way): just close it, never crash.
+  if (res.headersSent) { try { res.end(); } catch { /* closed */ } return; }
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
   res.end(JSON.stringify(body));
 }
@@ -518,6 +520,38 @@ async function handleApi(req, res, url) {
     }
   }
 
+  // Phone app: forms an administrator returned for correction (they become drafts on the phone).
+  if (route === "POST /api/mobile/returned") {
+    const body = await readBody(req);
+    const username = cleanText(body.username, 32).toLowerCase();
+    const user = users.find((u) => u.username === username);
+    const deviceId = cleanText(body.deviceId, 128);
+    if (!user || user.status !== "active" || (user.device && user.device.id !== deviceId) || isBlockedDevice(deviceId)) {
+      return sendError(res, 403, "Not allowed.");
+    }
+    try {
+      return sendJson(res, 200, { returned: await returnedFor(username) });
+    } catch (error) {
+      return sendJson(res, 502, { error: error.message });
+    }
+  }
+
+  // Phone app "Translate questions": the form's texts in Kiswahili or English (cached on the server).
+  if (route === "POST /api/mobile/translate") {
+    const body = await readBody(req);
+    const username = cleanText(body.username, 32).toLowerCase();
+    const user = users.find((u) => u.username === username);
+    const deviceId = cleanText(body.deviceId, 128);
+    if (!user || user.status !== "active" || (user.device && user.device.id !== deviceId) || isBlockedDevice(deviceId)) {
+      return sendError(res, 403, "Translation is only available to signed-in data collectors.");
+    }
+    try {
+      return sendJson(res, 200, await translator.forForm(cleanText(body.formId, 80), cleanText(body.lang, 8), () => aiAllowed(user.id)));
+    } catch (error) {
+      return sendJson(res, error.status || 500, { error: error.message || "Translation failed." });
+    }
+  }
+
   // Data shared with an API key: only the key owner's own submissions (JSON or CSV).
   if (req.method === "GET" && /^\/api\/v1\/my-submissions(\.csv|\.json)?$/.test(url.pathname)) {
     const owner = apiKeys.findUser(users, apiKeys.keyFrom(req, url));
@@ -554,6 +588,7 @@ async function handleApi(req, res, url) {
     const active = !!user && user.status === "active" && deviceOk && !blocked && !signedOut;
     if (active && user.device && deviceId === user.device.id) {
       user.device.lastSeenAt = new Date().toISOString();
+      rememberPending(user, "phone", body.pending);
       saveUsers();
     }
     const reason = blocked
@@ -561,7 +596,8 @@ async function handleApi(req, res, url) {
       : !user || user.status !== "active" ? "inactive"
       : !deviceOk ? "other-device"
       : signedOut ? "signed-out" : null;
-    return sendJson(res, 200, { active, reason });
+    // The name lets the phone show a renamed account without signing in again.
+    return sendJson(res, 200, { active, reason, ...(active ? { name: user.name || "" } : {}) });
   }
 
   // --- AHIP Collect Web (browser data collection for iPhones): its own sign-in and session
@@ -586,13 +622,25 @@ async function handleApi(req, res, url) {
     }
   }
 
+  // Forms saved on phones / browsers but not yet on the server (reported by the apps).
+  if (route === "GET /api/pending") {
+    return sendJson(res, 200, {
+      collectors: users.filter((u) => u.role === "collector").map((u) => ({
+        username: u.username, name: u.name,
+        phone: u.pending?.phone || null, web: u.pending?.web || null,
+      })),
+    });
+  }
+
   // Supervisors only need names for the charts and tables (no contact details, phones or keys).
   if (route === "GET /api/users" && !isAdmin) {
     return sendJson(res, 200, { users: users.map((u) => ({ username: u.username, name: u.name, role: u.role })) });
   }
 
-  // --- administrators only below (users, phones, settings, API keys)
+  // --- administrators only below (users, phones, settings, API keys, data management)
   if (!isAdmin) return sendError(res, 403, "Administrators only.");
+
+  if (url.pathname.startsWith("/api/data/")) return handleDataAdmin(req, res, url, me);
 
   if (route === "GET /api/users") {
     return sendJson(res, 200, { users: users.map(publicUser) });
@@ -760,6 +808,14 @@ async function handleApi(req, res, url) {
 
 const forms = createForms({ fhirUrl: FHIR_URL, dataDir: DATA_DIR });
 const ai = createAi({ fhirUrl: FHIR_URL });
+const translator = require("./lib/translate").createTranslator({ ai, dataDir: DATA_DIR, getForm: (id) => forms.get(id) });
+
+/** Drafts and forms not yet sent, as last reported by a collector's phone or browser. */
+function rememberPending(user, source, pending) {
+  if (!user || !pending || typeof pending !== "object") return;
+  const n = (v) => Math.max(0, Math.min(100000, Math.floor(Number(v) || 0)));
+  user.pending = { ...(user.pending || {}), [source]: { drafts: n(pending.drafts), unsynced: n(pending.unsynced), at: new Date().toISOString() } };
+}
 const apiKeys = createApiKeys({ fhirUrl: FHIR_URL });
 
 // Keep the "Name of CPP" dropdown up to date with every CPP submitted (every 30 minutes).
@@ -771,7 +827,12 @@ const refreshCpps = () =>
 // Give the six original tools their shared tool number (once), then keep the CPP list fresh.
 const startForms = (attempt = 1) =>
   forms.ensureRegistry().then(
-    (n) => { if (n) console.log(`Forms: numbered ${n} original tool(s)`); refreshCpps(); },
+    async (n) => {
+      if (n) console.log(`Forms: numbered ${n} original tool(s)`);
+      const changed = await forms.simplifyAll().catch((e) => { console.error("Forms update:", e.message); return []; });
+      if (changed.length) console.log(`Forms: per-question photo / voice, CPP type drop-down: ${changed.join(", ")}`);
+      refreshCpps();
+    },
     (e) => { console.error("Forms registry:", e.message); if (attempt < 20) setTimeout(() => startForms(attempt + 1), 30000); },
   );
 setTimeout(startForms, 15000);
@@ -867,6 +928,138 @@ function collectUser(req) {
 }
 const isBlockedUser = (user) => !!user.signOutRequestedAt;
 
+// ---------------------------------------------------------------- data management (admins)
+// Edit, return to the collector, or delete a submitted form. Every action needs a reason and is
+// written into the form itself (extension urn:ahip:change, one per action) so the history travels
+// with the data; deleted forms are kept as a backup in DATA_DIR/deleted.
+const CHANGE_EXT = "urn:ahip:change";
+const RETURNED_EXT = "urn:ahip:returned";
+
+function fhirRequest(method, resourcePath) {
+  const target = new URL(FHIR_URL.href.replace(/\/$/, "") + resourcePath);
+  const lib = target.protocol === "https:" ? require("https") : http;
+  return new Promise((resolve, reject) => {
+    const req = lib.request(target, { method, timeout: 60000, headers: { Accept: "application/fhir+json" } }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => {
+        let json = null;
+        try { json = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { /* not JSON */ }
+        if (res.statusCode >= 200 && res.statusCode < 300) resolve(json);
+        else reject(Object.assign(new Error(json?.issue?.[0]?.diagnostics || `FHIR server error ${res.statusCode}`), { status: res.statusCode === 404 || res.statusCode === 410 ? 404 : 502 }));
+      });
+    });
+    req.on("timeout", () => req.destroy(new Error("FHIR server timed out")));
+    req.on("error", reject);
+    req.end();
+  });
+}
+const fhirGetResource = (p) => fhirRequest("GET", p);
+
+const answerLabel = (a) => {
+  if (!a) return "";
+  if (a.valueCoding) return a.valueCoding.display || a.valueCoding.code || "";
+  if (a.valueAttachment) return a.valueAttachment.contentType?.startsWith("audio") ? "[recording]" : "[photo]";
+  for (const k of ["valueString", "valueInteger", "valueDecimal", "valueBoolean", "valueDate", "valueDateTime", "valueTime"]) if (a[k] !== undefined) return String(a[k]);
+  return "";
+};
+const answersLabel = (list) => (list || []).map(answerLabel).filter(Boolean).join(", ");
+
+/** Checks and cleans an answer sent by the admin page (no attachments: photos/recordings stay). */
+function cleanAnswer(a) {
+  if (!a || typeof a !== "object") return null;
+  if (a.valueCoding && typeof a.valueCoding === "object") {
+    const c = a.valueCoding;
+    return { valueCoding: { ...(c.system ? { system: String(c.system).slice(0, 200) } : {}), code: String(c.code || "").slice(0, 200), ...(c.display ? { display: String(c.display).slice(0, 500) } : {}) } };
+  }
+  if (typeof a.valueString === "string") return { valueString: a.valueString.slice(0, 5000) };
+  if (Number.isInteger(a.valueInteger)) return { valueInteger: a.valueInteger };
+  if (typeof a.valueDecimal === "number" && Number.isFinite(a.valueDecimal)) return { valueDecimal: a.valueDecimal };
+  if (typeof a.valueBoolean === "boolean") return { valueBoolean: a.valueBoolean };
+  if (typeof a.valueDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(a.valueDate)) return { valueDate: a.valueDate };
+  if (typeof a.valueTime === "string" && /^\d{2}:\d{2}(:\d{2})?$/.test(a.valueTime)) return { valueTime: a.valueTime.length === 5 ? a.valueTime + ":00" : a.valueTime };
+  return null;
+}
+
+function addChange(qr, entry) {
+  qr.extension = [...(qr.extension || []), { url: CHANGE_EXT, valueString: JSON.stringify(entry) }];
+}
+
+async function handleDataAdmin(req, res, url, me) {
+  const m = url.pathname.match(/^\/api\/data\/([A-Za-z0-9.-]{1,64})\/(edit|return|delete)$/);
+  if (req.method === "GET" && url.pathname === "/api/data/deleted") {
+    return sendJson(res, 200, { deleted: readDeletedLog() });
+  }
+  if (req.method !== "POST" || !m) return sendError(res, 404, "Not found.");
+  const [, id, action] = m;
+  const body = JSON.parse((await readRaw(req, 2 * 1024 * 1024)).toString("utf8") || "{}");
+  const reason = cleanText(body.reason, 1000);
+  if (reason.length < 3) return sendError(res, 400, "Write the reason (explanation) for this change.");
+  const qr = await fhirGetResource(`/QuestionnaireResponse/${encodeURIComponent(id)}`);
+  const at = new Date().toISOString();
+  const by = me.name || me.username;
+
+  if (action === "delete") {
+    fs.mkdirSync(path.join(DATA_DIR, "deleted"), { recursive: true });
+    fs.writeFileSync(path.join(DATA_DIR, "deleted", `${id}.json`), JSON.stringify(qr));
+    const log = readDeletedLog();
+    log.unshift({
+      id, at, by, reason,
+      form: String(qr.questionnaire || "").replace(/^Questionnaire\//, ""),
+      collector: (qr.meta?.tag || []).find((t) => t.system === COLLECTOR_TAG)?.code || "",
+      authored: qr.authored || null,
+    });
+    fs.writeFileSync(path.join(DATA_DIR, "deleted-log.json"), JSON.stringify(log.slice(0, 2000), null, 1));
+    await fhirRequest("DELETE", `/QuestionnaireResponse/${encodeURIComponent(id)}`);
+    return sendJson(res, 200, { ok: true });
+  }
+
+  if (action === "return") {
+    qr.status = "in-progress";
+    qr.extension = (qr.extension || []).filter((e) => e.url !== RETURNED_EXT);
+    qr.extension.push({ url: RETURNED_EXT, valueString: JSON.stringify({ at, by, reason }) });
+    addChange(qr, { at, by, action: "returned", reason });
+    await fhirPut(`/QuestionnaireResponse/${id}`, qr);
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // edit: [{ linkId, answer: [...] }] for questions already in the response
+  const wanted = Array.isArray(body.changes) ? body.changes.slice(0, 500) : [];
+  const byLink = new Map();
+  const walk = (items) => (items || []).forEach((i) => { if (!byLink.has(i.linkId)) byLink.set(i.linkId, i); walk(i.item); (i.answer || []).forEach((a) => walk(a.item)); });
+  walk(qr.item);
+  const changes = [];
+  for (const c of wanted) {
+    const item = byLink.get(String(c.linkId || ""));
+    if (!item) continue;
+    if ((item.answer || []).some((a) => a.valueAttachment)) continue; // photos / recordings are not edited here
+    const next = (Array.isArray(c.answer) ? c.answer : []).map(cleanAnswer).filter(Boolean);
+    const before = answersLabel(item.answer);
+    const after = answersLabel(next);
+    if (before === after) continue;
+    const nested = (item.answer || []).flatMap((a) => a.item || []);
+    if (next.length) {
+      item.answer = next;
+      if (nested.length) item.answer[0].item = nested; // keep questions nested under the answer
+    } else delete item.answer;
+    changes.push({ linkId: item.linkId, question: item.text || item.linkId, from: before, to: after });
+  }
+  if (!changes.length) return sendError(res, 400, "Nothing was changed.");
+  addChange(qr, { at, by, action: "edited", reason, changes });
+  await fhirPut(`/QuestionnaireResponse/${id}`, qr);
+  return sendJson(res, 200, { ok: true, changes });
+}
+
+function readDeletedLog() {
+  try { return JSON.parse(fs.readFileSync(path.join(DATA_DIR, "deleted-log.json"), "utf8")) || []; } catch { return []; }
+}
+
+/** Forms an administrator returned to this collector and not yet sent back. */
+async function returnedFor(username) {
+  const bundle = await fhirGetResource(`/QuestionnaireResponse?status=in-progress&_tag=${encodeURIComponent(`${COLLECTOR_TAG}|${username}`)}&_count=100`);
+  return (bundle?.entry || []).map((e) => e.resource).filter((r) => (r.extension || []).some((x) => x.url === RETURNED_EXT));
+}
+
 /** Writes one resource to the FHIR server (used only for web submissions). */
 function fhirPut(resourcePath, resource) {
   const target = new URL(FHIR_URL.href.replace(/\/$/, "") + resourcePath);
@@ -940,6 +1133,21 @@ async function handleCollect(req, res, url, route, ip) {
       });
     }
 
+    if (route === "POST /api/collect/translate") {
+      const body = await readBody(req);
+      return sendJson(res, 200, await translator.forForm(cleanText(body.formId, 80), cleanText(body.lang, 8), () => aiAllowed(me.id)));
+    }
+
+    if (route === "GET /api/collect/returned") {
+      return sendJson(res, 200, { returned: await returnedFor(me.username) });
+    }
+
+    if (route === "POST /api/collect/pending") {
+      rememberPending(me, "web", await readBody(req));
+      saveUsers();
+      return sendJson(res, 200, { ok: true });
+    }
+
     // AI assistant, as in the phone app: answers only from this collector's own submissions.
     if (route === "POST /api/collect/ai") {
       const body = JSON.parse((await readRaw(req, 256 * 1024)).toString("utf8") || "{}");
@@ -974,7 +1182,14 @@ async function handleCollect(req, res, url, route, ip) {
       const body = JSON.parse((await readRaw(req, 40 * 1024 * 1024)).toString("utf8") || "{}");
       const r = body.response || {};
       const id = String(body.id || "");
-      if (!WEB_ID_RE.test(id)) return sendError(res, 400, "Bad submission id.");
+      // A returned form keeps its id (it may come from the phone app); new web forms are web-…
+      let previous = null;
+      if (!WEB_ID_RE.test(id)) {
+        if (!/^[A-Za-z0-9-]{8,64}$/.test(id)) return sendError(res, 400, "Bad submission id.");
+        previous = await fhirGetResource(`/QuestionnaireResponse/${id}`).catch(() => null);
+        const mine = (previous?.meta?.tag || []).some((t) => t.system === COLLECTOR_TAG && t.code === me.username);
+        if (!previous || !mine || !(previous.extension || []).some((e) => e.url === RETURNED_EXT)) return sendError(res, 400, "Bad submission id.");
+      }
       const formId = String(r.questionnaire || "").replace(/^Questionnaire\//, "");
       const form = (await forms.allForms()).find((q) => q.id === formId && q.status !== "retired");
       if (r.resourceType !== "QuestionnaireResponse" || !form) return sendError(res, 400, "Unknown form.");
@@ -995,6 +1210,12 @@ async function handleCollect(req, res, url, route, ip) {
         item: r.item,
       };
       const ext = (r.extension || []).filter((e) => KEEP_RESPONSE_EXT.has(e.url));
+      if (previous) {
+        // Corrected after being returned: keep the history, note the resubmission.
+        ext.push(...(previous.extension || []).filter((e) => e.url === CHANGE_EXT || e.url === RETURNED_EXT));
+        ext.push({ url: CHANGE_EXT, valueString: JSON.stringify({ at: new Date().toISOString(), by: me.name || me.username, action: "resubmitted", reason: "Corrected by the data collector" }) });
+        clean.meta.tag = previous.meta?.tag?.length ? previous.meta.tag : clean.meta.tag;
+      }
       if (ext.length) clean.extension = ext;
       await fhirPut(`/QuestionnaireResponse/${id}`, clean);
       return sendJson(res, 200, { ok: true, id });

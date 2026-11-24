@@ -45,7 +45,10 @@ const $ = (id) => document.getElementById(id);
 const state = {
   forms: new Map(), // questionnaire id -> { tool, items: [{linkId, text, prefix, section}] }
   userNames: new Map(), // username -> full name, from AHIP Manage users
-  rows: [],
+  rows: [], // submitted (completed) forms
+  drafts: [], // forms started on phones and synced, not submitted yet
+  pending: [], // per collector: forms saved on the phone / browser, not synced yet
+  show: "submitted", // which forms the table and charts show: "submitted" | "drafts"
   filtered: [],
   page: 0,
   search: "",
@@ -146,7 +149,7 @@ function collectMedia(response) {
 function toRow(response) {
   const toolId = (response.questionnaire || "").split("/").pop().split("|")[0];
   const tool = TOOLS.find((t) => t.id === toolId);
-  if (!tool || response.status !== "completed") return null;
+  if (!tool || !["completed", "in-progress"].includes(response.status)) return null;
   const answers = flattenAnswers(response);
   const first = (ids) => {
     for (const id of ids) {
@@ -161,6 +164,7 @@ function toRow(response) {
   const authored = response.authored || response.meta?.lastUpdated;
   return {
     id: response.id,
+    draft: response.status === "in-progress",
     tool,
     authored: authored ? new Date(authored) : null,
     collector: (tag?.code && state.userNames.get(tag.code)) || tag?.code || typedName || "Unknown",
@@ -175,7 +179,7 @@ function toRow(response) {
       ? `${answers.get("gps_latitude")[0]}, ${answers.get("gps_longitude")[0]}` : "",
     answers,
     media: collectMedia(response),
-    quiz: tool.quiz ? window.AHIP_QUIZ.score(state.raw?.get(tool.id), response) : null,
+    quiz: tool.quiz && response.status === "completed" ? window.AHIP_QUIZ.score(state.raw?.get(tool.id), response) : null,
   };
 }
 
@@ -190,12 +194,16 @@ async function load() {
       fetchAll("/fhir/QuestionnaireResponse?_count=200&_sort=-_lastUpdated"),
       fetchJson("/api/users").catch(() => ({ users: [] })),
     ]);
+    const pending = await fetchJson("/api/pending").catch(() => ({ collectors: [] }));
     const questionnaires = [...new Map([...builtIn, ...numbered].map((q) => [q.id, q])).values()];
     TOOLS = toolsFrom(questionnaires);
     state.raw = new Map(questionnaires.map((q) => [q.id, q]));
     state.userNames = new Map((people.users || []).map((u) => [u.username, u.name]));
     state.forms = new Map(questionnaires.map((q) => [q.id, indexQuestionnaire(q, TOOLS.find((t) => t.id === q.id))]));
-    state.rows = responses.map(toRow).filter(Boolean).sort((a, b) => (b.authored || 0) - (a.authored || 0));
+    const all = responses.map(toRow).filter(Boolean).sort((a, b) => (b.authored || 0) - (a.authored || 0));
+    state.rows = all.filter((r) => !r.draft);
+    state.drafts = all.filter((r) => r.draft);
+    state.pending = pending.collectors || [];
     $("error").hidden = true;
     $("updated").textContent = `Updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
     buildFilterOptions();
@@ -248,7 +256,8 @@ function dateFloor() {
 function applyFilters() {
   const floor = dateFloor();
   const q = state.search.trim().toLowerCase();
-  state.filtered = state.rows.filter((r) => {
+  const source = state.show === "drafts" ? state.drafts : state.rows;
+  state.filtered = source.filter((r) => {
     if (floor && (!r.authored || r.authored < floor)) return false;
     for (const f of FILTERS) {
       const v = $(f.el).value;
@@ -297,8 +306,17 @@ function renderTiles() {
   const rows = state.filtered;
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const weekStart = new Date(today.getTime() - 6 * DAY);
-  $("tTotal").textContent = fmt(rows.length);
-  $("tTotalSub").textContent = rows.length === state.rows.length ? "all submissions" : `of ${fmt(state.rows.length)} in total`;
+  const drafts = state.show === "drafts";
+  const shown = drafts ? state.rows.length : rows.length;
+  $("tTotal").textContent = fmt(shown);
+  $("tTotalSub").textContent = drafts || rows.length === state.rows.length ? "all submissions" : `of ${fmt(state.rows.length)} in total`;
+  $("tDrafts").textContent = fmt(state.drafts.length);
+  $("tPending").textContent = fmt(pendingTotal());
+  document.querySelectorAll("[data-tile]").forEach((t) => t.classList.toggle("active",
+    (t.dataset.tile === "drafts" && drafts) || (t.dataset.tile === "submitted" && !drafts && $("fDate").value === "all")));
+  $("viewChip").hidden = !drafts;
+  $("viewChipText").textContent = drafts ? `Showing ${fmt(rows.length)} draft${rows.length === 1 ? "" : "s"}: forms started on phones and synced, but not submitted yet.` : "";
+  $("tableName").textContent = drafts ? "Drafts" : "Submissions";
   $("tToday").textContent = fmt(rows.filter((r) => r.authored && r.authored >= today).length);
   $("tWeek").textContent = fmt(rows.filter((r) => r.authored && r.authored >= weekStart).length);
   $("tCollectors").textContent = fmt(new Set(rows.map((r) => r.collector)).size);
@@ -496,7 +514,7 @@ function renderTable() {
     tr.className = "empty-row";
     const td = tr.insertCell();
     td.colSpan = 7;
-    td.textContent = state.rows.length ? "No submissions match these filters." : "No submissions yet. Submitted AHIP Collect assessments appear here after the phone syncs.";
+    td.textContent = state.show === "drafts" ? "No drafts match these filters." : state.rows.length ? "No submissions match these filters." : "No submissions yet. Submitted AHIP Collect assessments appear here after the phone syncs.";
   }
   for (const r of pageRows) {
     const tr = body.insertRow();
@@ -507,6 +525,12 @@ function renderTable() {
     chip.className = `tool-chip${r.tool.n % 2 ? "" : " even"}`;
     chip.textContent = `T${r.tool.n}`;
     toolCell.append(chip, document.createTextNode(r.tool.title));
+    if (r.draft) {
+      const pill = document.createElement("span");
+      pill.className = "status-pill";
+      pill.textContent = "Draft";
+      toolCell.append(pill);
+    }
     if (r.quiz) {
       const score = document.createElement("span");
       score.className = `score-chip${r.quiz.percent >= 50 ? "" : " low"}`;
@@ -669,6 +693,83 @@ $("prevPage").addEventListener("click", () => { state.page--; renderTable(); });
 $("nextPage").addEventListener("click", () => { state.page++; renderTable(); });
 $("exportBtn").addEventListener("click", exportCsv);
 $("refreshBtn").addEventListener("click", load);
+
+// ---------- Clickable KPI cards ----------
+
+/** Forms saved on a phone or browser and not yet sent (as last reported by each app). */
+const pendingOf = (c) => ["phone", "web"].reduce((n, k) => n + (c[k]?.unsynced || 0), 0);
+const pendingTotal = () => state.pending.reduce((n, c) => n + pendingOf(c), 0);
+
+function showForms(which, date = "all") {
+  state.show = which;
+  state.page = 0;
+  $("fDate").value = date;
+  render();
+  document.querySelector(".table-head").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function openTileDialog(title, hint, items) {
+  $("tileDialogTitle").textContent = title;
+  $("tileDialogHint").textContent = hint;
+  const list = document.createElement("ul");
+  list.className = "tile-list";
+  if (!items.length) {
+    const li = document.createElement("li");
+    li.textContent = "Nothing to show.";
+    list.append(li);
+  }
+  items.forEach((it) => {
+    const li = document.createElement("li");
+    const left = document.createElement(it.onClick ? "button" : "span");
+    left.textContent = it.label;
+    if (it.onClick) { left.type = "button"; left.addEventListener("click", () => { $("tileDialog").close(); it.onClick(); }); }
+    if (it.sub) { const s = document.createElement("span"); s.className = "sub"; s.textContent = it.sub; left.append(s); }
+    const num = document.createElement("span");
+    num.className = "num";
+    num.textContent = it.value;
+    li.append(left, num);
+    list.append(li);
+  });
+  $("tileDialogBody").replaceChildren(list);
+  $("tileDialog").showModal();
+}
+
+const ago = (iso) => {
+  if (!iso) return "never reported";
+  const min = Math.round((Date.now() - new Date(iso)) / 60000);
+  return min < 1 ? "just now" : min < 60 ? `${min} min ago` : min < 1440 ? `${Math.round(min / 60)} h ago` : new Date(iso).toLocaleDateString();
+};
+
+function pickFilter(selectId, value) {
+  state.show = "submitted";
+  if (selectId === "fCouncil") { $("fRegion").value = ""; buildFilterOptions(); }
+  $(selectId).value = value;
+  showForms("submitted", $("fDate").value);
+}
+
+const TILE_ACTIONS = {
+  submitted: () => showForms("submitted"),
+  drafts: () => showForms("drafts"),
+  today: () => showForms("submitted", "today"),
+  week: () => showForms("submitted", "7"),
+  pending: () => openTileDialog("Saved, not synced",
+    "Forms saved on each collector's phone (or AHIP Collect Web) that are not on the server yet. The numbers are updated each time the app opens or syncs.",
+    state.pending.filter((c) => c.phone || c.web).sort((a, b) => pendingOf(b) - pendingOf(a)).map((c) => ({
+      label: c.name || c.username,
+      sub: [c.phone && `phone: ${c.phone.unsynced} not synced, ${c.phone.drafts} drafts · ${ago(c.phone.at)}`, c.web && `web: ${c.web.unsynced} not synced, ${c.web.drafts} drafts · ${ago(c.web.at)}`].filter(Boolean).join(" — "),
+      value: fmt(pendingOf(c)),
+    }))),
+  collectors: () => openTileDialog("Data collectors", "Click a name to see only their forms.",
+    [...countBy(state.filtered, (r) => r.collector)].sort((a, b) => b[1] - a[1]).map(([name, n]) => ({ label: name, value: fmt(n), onClick: () => pickFilter("fCollector", name) }))),
+  councils: () => openTileDialog("Councils covered", "Click a council to see only its forms.",
+    [...countBy(state.filtered.filter((r) => r.council !== "Not recorded"), (r) => r.council)].sort((a, b) => b[1] - a[1]).map(([name, n]) => ({ label: name, value: fmt(n), onClick: () => pickFilter("fCouncil", name) }))),
+};
+document.querySelectorAll("[data-tile]").forEach((t) => t.addEventListener("click", () => TILE_ACTIONS[t.dataset.tile]?.()));
+$("viewChipClear").addEventListener("click", () => showForms("submitted", $("fDate").value));
+$("tileDialogClose").addEventListener("click", () => $("tileDialog").close());
+$("tileDialog").addEventListener("click", (e) => { if (e.target === $("tileDialog")) $("tileDialog").close(); });
+window.addEventListener("ahip:sync", (e) => { e.preventDefault(); window.AHIP_SYNC = load; });
+window.AHIP_SYNC = load;
 document.querySelectorAll("[data-close]").forEach((n) => n.addEventListener("click", closeDetail));
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("drawer").hidden) closeDetail(); });
 

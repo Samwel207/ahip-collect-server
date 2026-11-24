@@ -25,7 +25,7 @@
 
   // ---------- navigation
 
-  const VIEWS = { data: "viewData", users: "viewUsers", settings: "viewSettings" };
+  const VIEWS = { data: "viewData", manage: "viewManage", users: "viewUsers", settings: "viewSettings" };
   const isAdmin = () => me?.role === "admin";
   function showView() {
     // Supervisors see only the home page here (and the Forms page); Users and Settings are admin-only.
@@ -39,6 +39,7 @@
       loadBlocked();
     }
     if (name === "settings") loadSettings();
+    if (name === "manage") window.AHIP_MANAGE?.load();
   }
   window.addEventListener("hashchange", showView);
 

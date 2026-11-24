@@ -6,6 +6,7 @@
   <title>AHIP Manage</title>
   <link rel="icon" href="ahip_logo.png">
   <link rel="stylesheet" href="style.css">
+  <script src="theme.js"></script>
   <link rel="stylesheet" href="ai.css">
 </head>
 <body>
@@ -24,6 +25,7 @@
   </header>
   <nav class="tabs" aria-label="Sections">
     <a href="#data" data-view="data">Submitted data</a>
+    <a href="#manage" data-view="manage">Manage data</a>
     <a href="#users" data-view="users">Users</a>
     <a href="#settings" data-view="settings">Settings</a>
     <a href="forms.html">Forms</a>
@@ -58,17 +60,35 @@
     <div id="error" class="error" role="alert" hidden></div>
 
     <div id="content">
-      <section class="tiles" aria-label="Summary">
-        <div class="tile hero">
-          <span class="tile-label">Submissions</span>
+      <section class="tiles" aria-label="Summary (click a card to see those forms)">
+        <button type="button" class="tile hero" data-tile="submitted" title="Show the submitted forms">
+          <span class="tile-label">Submitted &amp; synced</span>
           <span class="tile-value" id="tTotal">–</span>
           <span class="tile-sub" id="tTotalSub"></span>
-        </div>
-        <div class="tile"><span class="tile-label">Today</span><span class="tile-value" id="tToday">–</span></div>
-        <div class="tile"><span class="tile-label">Last 7 days</span><span class="tile-value" id="tWeek">–</span></div>
-        <div class="tile"><span class="tile-label">Data collectors</span><span class="tile-value" id="tCollectors">–</span></div>
-        <div class="tile"><span class="tile-label">Councils covered</span><span class="tile-value" id="tCouncils">–</span></div>
+        </button>
+        <button type="button" class="tile drafts" data-tile="drafts" title="Show the drafts (forms started, not submitted)">
+          <span class="tile-label">Drafts</span><span class="tile-value" id="tDrafts">–</span><span class="tile-sub">started, not submitted</span>
+        </button>
+        <button type="button" class="tile pending" data-tile="pending" title="Forms saved on phones that are not on the server yet">
+          <span class="tile-label">Saved, not synced</span><span class="tile-value" id="tPending">–</span><span class="tile-sub">still on phones</span>
+        </button>
+        <button type="button" class="tile" data-tile="today"><span class="tile-label">Today</span><span class="tile-value" id="tToday">–</span></button>
+        <button type="button" class="tile" data-tile="week"><span class="tile-label">Last 7 days</span><span class="tile-value" id="tWeek">–</span></button>
+        <button type="button" class="tile" data-tile="collectors"><span class="tile-label">Data collectors</span><span class="tile-value" id="tCollectors">–</span></button>
+        <button type="button" class="tile" data-tile="councils"><span class="tile-label">Councils covered</span><span class="tile-value" id="tCouncils">–</span></button>
       </section>
+      <div id="viewChip" class="view-chip" hidden>
+        <span id="viewChipText"></span>
+        <button id="viewChipClear" type="button" class="btn ghost">Show submitted forms</button>
+      </div>
+      <dialog id="tileDialog" class="tile-dialog" aria-labelledby="tileDialogTitle">
+        <div class="tile-dialog-head">
+          <h2 id="tileDialogTitle"></h2>
+          <button type="button" class="icon-btn" id="tileDialogClose" aria-label="Close">✕</button>
+        </div>
+        <p id="tileDialogHint" class="muted"></p>
+        <div id="tileDialogBody"></div>
+      </dialog>
 
       <section class="card ai-insights" aria-label="AI insights">
         <div class="ai-insights-head">
@@ -113,7 +133,7 @@
 
       <section class="card">
         <div class="table-head">
-          <h2>Submissions <span class="muted" id="rowCount"></span></h2>
+          <h2 id="tableTitle"><span id="tableName">Submissions</span> <span class="muted" id="rowCount"></span></h2>
           <div class="table-actions">
             <input id="search" type="search" placeholder="Search site, collector, council…" aria-label="Search submissions">
             <button id="exportBtn" type="button" class="btn primary">Export CSV</button>
@@ -169,6 +189,44 @@
         <table class="data users">
           <thead><tr><th>Phone</th><th>Model</th><th>Last user</th><th>Blocked</th><th>Reason</th><th></th></tr></thead>
           <tbody id="blockedRows"></tbody>
+        </table>
+      </div>
+    </section>
+   </div>
+
+   <div id="viewManage" class="view" hidden>
+    <section class="card">
+      <div class="table-head">
+        <h2>Manage data <span class="muted" id="mCount"></span></h2>
+        <div class="table-actions">
+          <input id="mSearch" type="search" placeholder="Search tool, site, collector…" aria-label="Search forms">
+          <select id="mFilter" aria-label="Status">
+            <option value="">All statuses</option>
+            <option>Submitted</option><option>Edited</option><option>Returned</option><option>Corrected</option><option>Draft</option>
+          </select>
+          <button id="mRefresh" type="button" class="btn ghost">Refresh</button>
+        </div>
+      </div>
+      <p class="hint">Edit answers, return a form to its data collector for correction, or delete it. Every change needs a reason; the reasons are kept in each form's history and a returned form shows your explanation to the collector. <span id="mStatus" class="muted"></span></p>
+      <div class="table-wrap">
+        <table class="data">
+          <thead><tr><th>Date</th><th>Tool</th><th>Site</th><th>Data collector</th><th>Status</th><th>Last change</th><th>Actions</th></tr></thead>
+          <tbody id="mRows"></tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <button id="mPrev" type="button" class="btn ghost">Previous</button>
+        <span id="mPage" class="muted"></span>
+        <button id="mNext" type="button" class="btn ghost">Next</button>
+      </div>
+    </section>
+    <section class="card" style="margin-top:12px">
+      <h2>Deleted forms <span class="muted" id="mDeletedCount"></span></h2>
+      <p class="hint">A backup of each deleted form is kept on the server (data/deleted).</p>
+      <div class="table-wrap">
+        <table class="data">
+          <thead><tr><th>Deleted</th><th>Tool</th><th>Data collector</th><th>By</th><th>Reason</th></tr></thead>
+          <tbody id="mDeleted"></tbody>
         </table>
       </div>
     </section>
@@ -265,6 +323,7 @@
   <script src="quiz.js"></script>
   <script src="app.js"></script>
   <script src="admin.js"></script>
+  <script src="manage.js"></script>
   <script src="ai.js"></script>
 </body>
 </html>
