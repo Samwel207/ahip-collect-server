@@ -183,7 +183,34 @@ function deviceLabel(d) {
 
 // ---------------------------------------------------------------- sessions & rate limiting
 
-const sessions = new Map(); // token -> { userId, expiresAt }
+/**
+ * Sign-ins (AHIP Manage and AHIP Collect Web), kept in DATA_DIR/sessions.json so a server restart does
+ * not sign everyone out. Only a SHA-256 hash of each token is stored.
+ */
+const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
+const tokenHash = (t) => crypto.createHash("sha256").update(String(t)).digest("hex");
+const sessions = (() => {
+  const map = new Map();
+  try {
+    for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(SESSIONS_FILE, "utf8")))) if (v.expiresAt > Date.now()) map.set(k, v);
+  } catch { /* first start */ }
+  let timer = null;
+  const save = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      try {
+        for (const [k, v] of map) if (v.expiresAt < Date.now()) map.delete(k);
+        fs.writeFileSync(SESSIONS_FILE + ".tmp", JSON.stringify(Object.fromEntries(map)), { mode: 0o600 });
+        fs.renameSync(SESSIONS_FILE + ".tmp", SESSIONS_FILE);
+      } catch (e) { console.error("Sessions:", e.message); }
+    }, 300);
+  };
+  return {
+    get: (t) => map.get(tokenHash(t)),
+    set: (t, v) => { map.set(tokenHash(t), v); save(); },
+    delete: (t) => { map.delete(tokenHash(t)); save(); },
+  };
+})();
 
 function parseCookies(req) {
   const out = {};
@@ -213,6 +240,17 @@ function startSession(res, user) {
     "Set-Cookie",
     `ahip_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_HOURS * 3600}`,
   );
+}
+
+/** AI questions: up to AI_PER_WINDOW per person per 15 minutes (only to stop runaway use). */
+const AI_PER_WINDOW = 60;
+const aiUse = new Map(); // userId -> [timestamps]
+function aiAllowed(userId) {
+  const recent = (aiUse.get(userId) || []).filter((t) => Date.now() - t < FAILURE_WINDOW_MS);
+  if (recent.length >= AI_PER_WINDOW) { aiUse.set(userId, recent); return false; }
+  recent.push(Date.now());
+  aiUse.set(userId, recent);
+  return true;
 }
 
 const failures = new Map(); // key -> [timestamps]
@@ -465,8 +503,7 @@ async function handleApi(req, res, url) {
     if (!user || user.status !== "active" || !user.device || user.device.id !== deviceId || isBlockedDevice(deviceId)) {
       return sendError(res, 403, "The AI assistant is only available on your own linked phone.");
     }
-    if (tooManyFailures(`mobileai:${user.id}`)) return sendError(res, 429, "Too many questions. Wait a few minutes and try again.");
-    recordFailure(`mobileai:${user.id}`);
+    if (!aiAllowed(user.id)) return sendError(res, 429, "Too many questions in a short time. Wait a few minutes and try again.");
     try {
       const ids = await ai.idsForCollector(username);
       const answer = await ai.ask({
@@ -792,6 +829,7 @@ async function handleForms(req, res, url, me) {
       return sendJson(res, 200, { errors: forms.validate(body.form, id) });
     }
     if (req.method === "GET" && action === "/history") return sendJson(res, 200, { versions: forms.history(id) });
+    if (req.method === "POST" && action === "/delete") return sendJson(res, 200, await forms.removeForm(id, me.name));
     if (req.method === "POST" && action === "/archive") {
       const body = JSON.parse((await readRaw(req, 4 * 1024)).toString("utf8") || "{}");
       return sendJson(res, 200, { form: await forms.setArchived(id, body.archived !== false, me.name) });
@@ -888,7 +926,7 @@ async function handleCollect(req, res, url, route, ip) {
     const me = collectUser(req);
     if (!me) return sendError(res, 401, "Sign in required.");
 
-    if (route === "GET /api/collect/session") return sendJson(res, 200, { user: { username: me.username, name: me.name } });
+    if (route === "GET /api/collect/session") return sendJson(res, 200, { user: { username: me.username, name: me.name }, server: req.headers.host || "" });
 
     if (route === "GET /api/collect/forms") {
       const list = (await forms.allForms()).filter((q) => q.status !== "retired");
@@ -897,7 +935,39 @@ async function handleCollect(req, res, url, route, ip) {
 
     if (route === "GET /api/collect/mine") {
       const mine = await apiKeys.submissionsFor(me.username);
-      return sendJson(res, 200, { submissions: mine.map(({ id, tool, submitted }) => ({ id, tool, submitted })) });
+      return sendJson(res, 200, {
+        submissions: mine.map(({ id, tool, formId, site, assessment, submitted }) => ({ id, tool, formId, site, assessment, submitted })),
+      });
+    }
+
+    // AI assistant, as in the phone app: answers only from this collector's own submissions.
+    if (route === "POST /api/collect/ai") {
+      const body = JSON.parse((await readRaw(req, 256 * 1024)).toString("utf8") || "{}");
+      if (!aiAllowed(me.id)) return sendError(res, 429, "Too many questions in a short time. Wait a few minutes and try again.");
+      const ids = await ai.idsForCollector(me.username);
+      const answer = await ai.ask({
+        question: body.question,
+        history: Array.isArray(body.history) ? body.history.slice(-12) : [],
+        view: { ids, description: `Only the submissions of data collector ${me.name || me.username}` },
+        audience: "collector",
+      });
+      return sendJson(res, 200, answer);
+    }
+
+    // "Share my data (API key)", as in the phone app: the password is asked again.
+    if (route === "POST /api/collect/api-key") {
+      const body = await readBody(req);
+      const key = `apikey:${ip}:${me.username}`;
+      if (tooManyFailures(key)) return sendError(res, 429, "Too many attempts. Wait 15 minutes and try again.");
+      if (!checkPassword(String(body.password || ""), me.passwordHash)) {
+        recordFailure(key);
+        return sendError(res, 401, "Wrong password.");
+      }
+      const apiKey = apiKeys.issue(me);
+      saveUsers();
+      const proto = req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
+      const base = `${proto}://${req.headers.host || "localhost:" + PORT}`;
+      return sendJson(res, 200, { apiKey, jsonUrl: `${base}/api/v1/my-submissions`, csvUrl: `${base}/api/v1/my-submissions.csv` });
     }
 
     if (route === "POST /api/collect/submit") {

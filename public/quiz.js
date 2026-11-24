@@ -47,7 +47,8 @@
 
   /** Score from a linkId -> values map; null when the form is not a quiz or has no answer key. */
   function scoreAnswers(questionnaire, answers) {
-    if (!settings(questionnaire)) return null;
+    const s = settings(questionnaire);
+    if (!s || s.scored === false) return null; // a time limit alone is not a scored quiz
     let points = 0, total = 0, right = 0, count = 0;
     const walk = (items) => (items || []).forEach((i) => {
       const k = keyOf(i);

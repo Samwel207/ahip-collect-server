@@ -14,6 +14,7 @@ const MAX_SIZE = "http://hl7.org/fhir/StructureDefinition/maxSize";
 const GPS = "https://github.com/google/android-fhir/StructureDefinition/gps-coordinate";
 const AUDIO_MAX = "https://smartregister.org/audio-max-duration-minutes";
 const GRID = "urn:ahip:grid";
+const TABLE = "urn:ahip:table";
 const PHONE_REGEX = "^(\\+?255|0)[0-9]{9}$";
 const EMAIL_REGEX = "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$";
 const SLIDER_STEP = "http://hl7.org/fhir/StructureDefinition/questionnaire-sliderStepValue";
@@ -24,7 +25,8 @@ const TARGET_EXT = "urn:ahip:tool-target";
 const MINUTES_EXT = "urn:ahip:tool-minutes";
 const Q = window.AHIP_QUIZ;
 const QUIZ_KINDS = new Set(["multiple", "checkboxes", "dropdown", "likert", "linear", "integer", "decimal", "slider", "short"]);
-const isQuiz = () => !!Q.settings(state.form);
+/** Scored quiz (answer keys and points). A time limit alone is a timed form, not a quiz. */
+const isQuiz = () => { const s = Q.settings(state.form); return !!s && s.scored !== false; };
 
 // Items the app depends on: shown with a lock, not editable / removable here.
 const LOCKED = new Set([
@@ -44,8 +46,9 @@ const TYPES = [
   { kind: "dropdown", label: "Dropdown", icon: "▾", group: "Choice" },
   { kind: "linear", label: "Linear scale (1 to 5, 0 to 10…)", icon: "⋯", group: "Scale" },
   { kind: "likert", label: "Likert scale (agree … disagree)", icon: "≋", group: "Scale" },
-  { kind: "grid", label: "Multiple choice grid (table)", icon: "▦", group: "Table" },
-  { kind: "checkgrid", label: "Checkbox grid (table)", icon: "▤", group: "Table" },
+  { kind: "grid", label: "Likert set / multiple choice grid (table)", icon: "▦", group: "Table" },
+  { kind: "checkgrid", label: "Checkbox grid (table)", icon: "☷", group: "Table" },
+  { kind: "table", label: "Table: type numbers or text in cells", icon: "▤", group: "Table" },
   { kind: "integer", label: "Number (whole)", icon: "#", group: "Number" },
   { kind: "decimal", label: "Number (decimal)", icon: "#.", group: "Number" },
   { kind: "slider", label: "Slider (number)", icon: "⟷", group: "Number" },
@@ -125,6 +128,7 @@ function kindOf(item) {
     case "display": return "note";
     case "group":
       if (ctl === "location-widget") return "gps";
+      if (ext(item, TABLE)) return "table";
       if (ext(item, GRID)) return item.item?.[0]?.repeats ? "checkgrid" : "grid";
       return "group";
     case "choice":
@@ -200,6 +204,13 @@ function newItem(kind, text = "") {
       q.type = "choice";
       q.text = text || "On a scale of 1 to 5, how …?";
       setLinear(q, 1, 5, "Not at all", "Extremely");
+      break;
+    case "table":
+      q.type = "group";
+      q.text = text || "Fill in the table";
+      q.extension = [];
+      q.required = true;
+      buildTable(q, ["Row 1", "Row 2"], [{ name: "Number", type: "integer" }]);
       break;
     case "grid":
     case "checkgrid": {
@@ -334,12 +345,12 @@ function setForm(form, { dirty = false } = {}) {
   $("formTarget").value = extOf(form, TARGET_EXT)?.valueString || "";
   $("formMinutes").value = extOf(form, MINUTES_EXT)?.valueInteger || "";
   const quiz = Q.settings(form);
-  $("formQuiz").checked = !!quiz;
-  $("quizLimitWrap").hidden = !quiz;
-  $("formQuizMinutes").value = quiz?.timeLimitMinutes || "";
+  $("formQuiz").checked = !!quiz && quiz.scored !== false;
+  $("formTimeLimit").value = quiz?.timeLimitMinutes || "";
   const tool = state.tools.find((t) => t.id === form.id);
   $("formMeta").textContent = `Tool ${tool?.number || "?"} · ${form.id} · version ${form.meta?.versionId || "–"}${tool?.lastUpdated ? " · published " + new Date(tool.lastUpdated).toLocaleString() : ""}`;
   $("archiveBtn").hidden = !!tool?.builtIn;
+  $("deleteBtn").hidden = !!tool?.builtIn;
   $("archiveBtn").textContent = tool?.archived ? "Bring back" : "Archive form";
   $("archivedBanner").hidden = !tool?.archived;
   state.current = null;
@@ -381,9 +392,13 @@ function renderSection(page, index, pages) {
   const logic = logicOpen && conditionEditor(page, { title: "Show this section only when… (otherwise the phone skips it)" });
   const list = el("div", { class: "questions" });
   renderItems(page, list, { locked: FIXED_PAGES.has(page.linkId) });
-  const add = !FIXED_PAGES.has(page.linkId) &&
-    el("button", { type: "button", class: "btn ghost small add-q", onclick: (e) => showTypeMenu(e.currentTarget, (kind) => addQuestion(page, kind)) }, "+ Question");
-  return el("section", { class: `card section${fixed ? " fixed" : ""}`, "data-page": page.linkId }, head, logicNote, logic, list, add);
+  const add = !FIXED_PAGES.has(page.linkId) && el("div", { class: "quick-add" },
+    el("span", { class: "quick-label", text: "+ Add" }),
+    QUICK.map(([kind, label]) => el("button", { type: "button", class: "quick-btn", onclick: () => addQuestion(page, kind) }, label)),
+    el("button", { type: "button", class: "quick-btn more", onclick: (e) => showTypeMenu(e.currentTarget, (kind) => addQuestion(page, kind)) }, "All types…"));
+  const desc = index > 0 && !FIXED_PAGES.has(page.linkId) &&
+    el("input", { class: "section-desc", value: sectionDesc(page), placeholder: "Section description (optional, shown at the top of the page)", oninput: (e) => { setSectionDesc(page, e.target.value); markDirty(); } });
+  return el("section", { class: `card section${fixed ? " fixed" : ""}`, "data-page": page.linkId }, head, desc, logicNote, logic, list, add);
 }
 
 function renderItems(parent, container, { locked = false, depth = 0 } = {}) {
@@ -391,6 +406,7 @@ function renderItems(parent, container, { locked = false, depth = 0 } = {}) {
   items.forEach((item, i) => {
     if (item.readOnly && ext(item, HIDDEN)) return;
     if (isHelper(item, items)) return;
+    if (item.linkId === `${parent.linkId}_desc`) return; // section description (edited under the title)
     container.append(renderQuestion(item, parent, i, { locked: locked || LOCKED.has(item.linkId), depth }));
   });
 }
@@ -428,6 +444,7 @@ function renderQuestion(item, parent, index, { locked, depth }) {
       el("div", { class: "chips" }, chips),
       (item.answerOption || []).length > 0 && el("div", { class: "q-options hint", text: item.answerOption.map((o) => o.valueCoding?.display).join(" · ") }),
       (kind === "grid" || kind === "checkgrid") && el("div", { class: "q-options hint", text: `${(item.item || []).length} rows × ${(item.item?.[0]?.answerOption || []).length} columns` }),
+      kind === "table" && el("div", { class: "q-options hint", text: `${tableRows(item).length} rows × ${tableCols(item).length} columns: ${tableCols(item).map((c) => c.name).join(", ")}` }),
     ),
     !locked && el("div", { class: "row-actions", onclick: (e) => e.stopPropagation() },
       el("button", { type: "button", class: "icon-btn", title: "Move up", disabled: pos <= 0, onclick: () => moveItem(parent, item, -1) }, "↑"),
@@ -535,6 +552,7 @@ function renderEditor(item, parent, kind, pos, siblings) {
   if (kind === "likert") box.append(scaleEditor(item, [item]));
   if (kind === "linear") box.append(linearEditor(item));
   if (kind === "grid" || kind === "checkgrid") box.append(gridEditor(item));
+  if (kind === "table") box.append(tableEditor(item));
   if (kind === "integer" || kind === "decimal") box.append(rangeEditor(item, kind));
   if (kind === "slider") box.append(sliderEditor(item));
   if (["short", "paragraph", "email", "phone"].includes(kind)) box.append(el("div", { class: "answer-line", text: kind === "paragraph" ? "Long answer text" : kind === "email" ? "name@example.com" : kind === "phone" ? "+255 7XX XXX XXX" : "Short answer text" }));
@@ -572,6 +590,7 @@ function renderEditor(item, parent, kind, pos, siblings) {
       el("input", { type: "checkbox", role: "switch", checked: !!item.required, onchange: (e) => set(() => {
         if (e.target.checked) item.required = true; else delete item.required;
         if (kind === "grid" || kind === "checkgrid") (item.item || []).forEach((r) => (e.target.checked ? (r.required = true) : delete r.required));
+        if (kind === "table") tableRows(item).forEach((r) => (r.item || []).forEach((c) => (e.target.checked ? (c.required = true) : delete c.required)));
       }) }),
       el("span", { class: "slider-track", "aria-hidden": "true" })),
     el("button", { type: "button", class: "btn small primary", onclick: () => toggle(item) }, "Done"),
@@ -612,6 +631,166 @@ function answerKeyEditor(item, kind) {
       oninput: (e) => { key.points = Math.max(1, Math.round(Number(e.target.value) || 1)); save(); } })),
     key.correct.length > 0 && el("button", { type: "button", class: "btn ghost small", onclick: () => { key.correct = []; save(); render(); } }, "Clear answer key")));
   return box;
+}
+
+// ------------------------------------------------------------------ table question (type in cells)
+
+const QUICK = [
+  ["multiple", "◉ Multiple choice"],
+  ["checkboxes", "☑ Checkboxes"],
+  ["dropdown", "▾ Dropdown"],
+  ["short", "▭ Short answer"],
+  ["paragraph", "☰ Paragraph"],
+  ["integer", "# Number"],
+  ["linear", "⋯ Linear scale"],
+  ["grid", "▦ Likert set"],
+  ["table", "▤ Table"],
+  ["date", "📅 Date"],
+  ["photo", "📷 Photo"],
+];
+
+const tableRows = (t) => (t.item || []).filter((r) => r.type === "group");
+function tableCols(t) {
+  try { return JSON.parse(ext(t, TABLE)?.valueString || "{}").columns || []; } catch { return []; }
+}
+
+/** Rows are groups, each cell a question "<row> – <column>"; existing cells keep their data names. */
+function buildTable(t, rowLabels, cols) {
+  t.extension = (t.extension || []).filter((e) => e.url !== TABLE);
+  t.extension.push({ url: TABLE, valueString: JSON.stringify({ columns: cols }) });
+  const used = new Set(allItems().map((i) => i.linkId));
+  const fresh = (base) => { let id = slug(base); let n = 2; while (used.has(id)) id = `${slug(base)}_${n++}`; used.add(id); return id; };
+  const old = tableRows(t);
+  const extras = (t.item || []).filter((x) => x.type !== "group");
+  t.item = [...extras, ...rowLabels.map((label, r) => {
+    const prev = old[r];
+    const rowId = prev?.linkId || fresh(`${t.linkId}_r${r + 1}`);
+    return {
+      linkId: rowId,
+      text: label,
+      type: "group",
+      item: cols.map((c, ci) => {
+        const cell = { linkId: prev?.item?.[ci]?.linkId || fresh(`${rowId}_c${ci + 1}`), text: `${label} – ${c.name}`, type: c.type };
+        if (t.required) cell.required = true;
+        return cell;
+      }),
+    };
+  })];
+}
+
+function tableEditor(t) {
+  const rows = tableRows(t).map((r) => r.text || "");
+  const cols = tableCols(t).map((c) => ({ ...c }));
+  const apply = (redraw) => { buildTable(t, rows, cols); markDirty(); if (redraw) render(); };
+  const TYPES_CELL = [["integer", "Number (whole)"], ["decimal", "Number (decimal)"], ["string", "Text"]];
+  const box = el("div", { class: "options" });
+  box.append(el("div", { class: "field-label", text: "Columns (what is typed in each cell)" }),
+    el("div", { class: "option-list" }, cols.map((c, i) => el("div", { class: "option-row" },
+      el("span", { class: "bullet", text: String.fromCharCode(65 + (i % 26)) }),
+      el("input", { value: c.name, "aria-label": `Column ${i + 1} name`, oninput: (e) => { c.name = e.target.value; apply(false); } }),
+      el("select", { onchange: (e) => { c.type = e.target.value; apply(false); } }, TYPES_CELL.map(([v, l]) => el("option", { value: v, selected: c.type === v }, l))),
+      el("button", { type: "button", class: "icon-btn danger", title: "Remove column", disabled: cols.length <= 1, onclick: () => { if (confirm(`Remove the column "${c.name}"?`)) { cols.splice(i, 1); apply(true); } } }, "✕")))),
+    el("button", { type: "button", class: "btn ghost small", onclick: () => { cols.push({ name: `Column ${cols.length + 1}`, type: "integer" }); apply(true); } }, "+ Add column"),
+    el("div", { class: "field-label", text: "Rows" }),
+    el("div", { class: "option-list" }, rows.map((label, i) => el("div", { class: "option-row" },
+      el("span", { class: "bullet", text: String(i + 1) }),
+      el("input", { value: label, "aria-label": `Row ${i + 1} label`, oninput: (e) => { rows[i] = e.target.value; apply(false); } }),
+      el("button", { type: "button", class: "icon-btn danger", title: "Remove row", disabled: rows.length <= 1, onclick: () => { if (confirm(`Remove the row "${label}"?`)) { rows.splice(i, 1); apply(true); } } }, "✕")))),
+    el("button", { type: "button", class: "btn ghost small", onclick: () => { rows.push(`Row ${rows.length + 1}`); apply(true); } }, "+ Add row"),
+    el("p", { class: "hint", text: "On the phone each row is a small group with one box per column; in AHIP Collect Web and the preview it is a table." }));
+  return box;
+}
+
+// ------------------------------------------------------------------ section description
+
+const sectionDesc = (page) => (page.item || []).find((i) => i.linkId === `${page.linkId}_desc`)?.text || "";
+function setSectionDesc(page, text) {
+  page.item = (page.item || []).filter((i) => i.linkId !== `${page.linkId}_desc`);
+  if (text.trim()) page.item.unshift({ linkId: `${page.linkId}_desc`, text: text.trim(), type: "display" });
+}
+
+// ------------------------------------------------------------------ import questions from another form
+
+const imp = { form: null, picked: new Set() };
+
+async function openImport() {
+  $("importFrom").replaceChildren(...state.tools.map((t) => el("option", { value: t.id, selected: t.id !== state.form.id && !imp.form }, t.title)));
+  const targets = state.form.item.filter((p, i) => i > 0 && !FIXED_PAGES.has(p.linkId));
+  $("importTo").replaceChildren(...targets.map((p) => el("option", { value: p.linkId, selected: state.current && allItems([p]).includes(state.current.item) }, p.text || p.linkId)),
+    el("option", { value: "__new" }, "A new section"));
+  $("importDialog").hidden = false;
+  await loadImportList();
+}
+
+async function loadImportList() {
+  const list = $("importList");
+  list.replaceChildren(el("p", { class: "muted", text: "Loading…" }));
+  try {
+    imp.form = (await api("GET", `/api/forms/${$("importFrom").value}`)).form;
+  } catch (e) { return list.replaceChildren(el("p", { class: "error", text: e.message })); }
+  imp.picked = new Set();
+  const pages = imp.form.item.filter((p, i) => i > 0 && !FIXED_PAGES.has(p.linkId));
+  list.replaceChildren(...pages.map((p) => {
+    const questions = (p.item || []).filter((q) => !isHelper(q, p.item) && !LOCKED.has(q.linkId) && !(q.readOnly && ext(q, HIDDEN)) && q.linkId !== `${p.linkId}_desc`);
+    const boxes = questions.map((q) => el("label", { class: "import-q" },
+      el("input", { type: "checkbox", onchange: (e) => (e.target.checked ? imp.picked.add(q) : imp.picked.delete(q)) }),
+      `${q.prefix ? q.prefix + " " : ""}${q.text || q.linkId}`));
+    return el("fieldset", { class: "import-section" },
+      el("legend", {}, el("label", {}, el("input", { type: "checkbox", onchange: (e) => boxes.forEach((b) => { const cb = b.querySelector("input"); cb.checked = e.target.checked; cb.dispatchEvent(new Event("change")); }) }), ` ${p.text}`)),
+      boxes);
+  }));
+}
+
+function doImport() {
+  if (!imp.picked.size) return alert("Tick the questions to import.");
+  let target = state.form.item.find((p) => p.linkId === $("importTo").value);
+  if (!target) {
+    target = { linkId: uniqueLinkId("section_imported"), text: `Imported from ${imp.form.title}`, type: "group", extension: [control("page")], item: [] };
+    const photos = state.form.item.findIndex((p) => p.linkId === "photos");
+    state.form.item.splice(photos >= 0 ? photos : state.form.item.length, 0, target);
+  }
+  // Keep the source order; bring each question's helpers (other-specify box, voice recorder, hint) along.
+  const order = imp.form.item.flatMap((p) => (p.item || []).map((q) => [p, q])).filter(([, q]) => imp.picked.has(q));
+  const blocks = order.map(([p, q]) => clone(withHelpers(p, q)));
+  const used = new Set(allItems().map((i) => i.linkId));
+  const map = new Map();
+  blocks.flat().forEach((root) => allItems([root]).forEach((i) => {
+    let id = i.linkId; let n = 2;
+    while (used.has(id)) id = `${i.linkId}_${n++}`;
+    used.add(id);
+    map.set(i.linkId, id);
+  }));
+  blocks.flat().forEach((root) => allItems([root]).forEach((i) => {
+    i.linkId = map.get(i.linkId) || i.linkId;
+    if (i.enableWhen) {
+      i.enableWhen = i.enableWhen.filter((w) => map.has(w.question)).map((w) => ({ ...w, question: map.get(w.question) }));
+      if (!i.enableWhen.length) { delete i.enableWhen; delete i.enableBehavior; } else if (i.enableWhen.length === 1) delete i.enableBehavior;
+    }
+  }));
+  target.item = [...(target.item || []), ...blocks.flat()];
+  $("importDialog").hidden = true;
+  markDirty();
+  render();
+  alert(`${order.length} question${order.length === 1 ? "" : "s"} imported into “${target.text}”. Use Renumber if the numbers should follow on.`);
+}
+
+// ------------------------------------------------------------------ delete form
+
+async function deleteForm() {
+  const tool = state.tools.find((t) => t.id === state.form.id);
+  if (!tool || tool.builtIn) return;
+  if (!confirm(`Delete “${tool.title}”?\n\nIt disappears from AHIP Manage and from the phones at their next Sync. Submissions already made with it are kept on the dashboard.`)) return;
+  try {
+    await api("POST", `/api/forms/${state.form.id}/delete`, {});
+    state.dirty = false;
+    state.form = null;
+    state.toolId = null;
+    try { localStorage.removeItem("ahip-forms-tool"); } catch {}
+    $("editor").hidden = true;
+    $("empty").hidden = false;
+    await loadTools();
+    alert("The form was deleted.");
+  } catch (e) { alert(e.message); }
 }
 
 function autoGrow(t) {
@@ -1322,7 +1501,7 @@ function pvValidate(page) {
     const walk = (items) => items.forEach((i) => {
       if (!isEnabled(i) || (i.readOnly && ext(i, HIDDEN))) return;
       const kind = kindOf(i);
-      if (i.required && !["group", "grid", "checkgrid", "gps", "photo", "audio", "note"].includes(kind) && !(preview.answers.get(i.linkId) || []).some((v) => v !== "" && v != null)) preview.errors.add(i.linkId);
+      if (i.required && !["group", "grid", "checkgrid", "table", "gps", "photo", "audio", "note"].includes(kind) && !(preview.answers.get(i.linkId) || []).some((v) => v !== "" && v != null)) preview.errors.add(i.linkId);
       if (i.item && kind !== "gps") walk(i.item);
     });
     walk(page.item || []);
@@ -1399,6 +1578,16 @@ function pvItem(item) {
       card.append(el("select", { class: "pv-input short", onchange: (e) => pvSet(item.linkId, e.target.value ? [e.target.value] : []) },
         el("option", { value: "" }, "Choose"), opts.map((o) => el("option", { value: o.code, selected: values[0] === o.code }, o.display))));
       break;
+    case "table": {
+      const rows = tableRows(item).filter(isEnabled);
+      const cols = tableCols(item);
+      card.append(el("div", { class: "pv-grid-wrap" }, el("table", { class: "pv-grid" },
+        el("thead", {}, el("tr", {}, el("th", {}), cols.map((c) => el("th", { text: c.name })))),
+        el("tbody", {}, rows.map((r) => el("tr", {}, el("th", { text: r.text || "" }),
+          (r.item || []).map((cell) => el("td", {}, el("input", { class: "pv-cell", type: cell.type === "string" ? "text" : "number", "aria-label": cell.text, value: (preview.answers.get(cell.linkId) || [])[0] ?? "",
+            onchange: (e) => pvSet(cell.linkId, e.target.value === "" ? [] : [cell.type === "string" ? e.target.value : Number(e.target.value)], false) })))))))));
+      break;
+    }
     case "grid": case "checkgrid": {
       const rows = (item.item || []).filter((r) => r.type === "choice" && isEnabled(r));
       const cols = (rows[0]?.answerOption || []).map((o) => o.valueCoding);
@@ -1532,14 +1721,18 @@ $("formDesc").addEventListener("input", (e) => { if (e.target.value.trim()) stat
 $("formTarget").addEventListener("input", (e) => setFormExt(TARGET_EXT, "valueString", e.target.value.trim()));
 $("formMinutes").addEventListener("input", (e) => { const v = Math.round(Number(e.target.value)); setFormExt(MINUTES_EXT, "valueInteger", v > 0 ? v : ""); });
 $("newFormBtn").addEventListener("click", openNewForm);
+/** Time limit (any form) and quiz scoring are separate settings, stored together in urn:ahip:quiz. */
 const setQuiz = () => {
-  const on = $("formQuiz").checked;
-  const minutes = Math.max(0, Math.round(Number($("formQuizMinutes").value) || 0));
-  setFormExt(Q.QUIZ, "valueString", on ? JSON.stringify({ timeLimitMinutes: minutes }) : "");
-  $("quizLimitWrap").hidden = !on;
+  const scored = $("formQuiz").checked;
+  const minutes = Math.max(0, Math.round(Number($("formTimeLimit").value) || 0));
+  setFormExt(Q.QUIZ, "valueString", scored || minutes ? JSON.stringify({ timeLimitMinutes: minutes, scored }) : "");
 };
 $("formQuiz").addEventListener("change", () => { setQuiz(); render(); });
-$("formQuizMinutes").addEventListener("input", setQuiz);
+$("formTimeLimit").addEventListener("input", setQuiz);
+$("deleteBtn").addEventListener("click", deleteForm);
+$("importBtn").addEventListener("click", openImport);
+$("importFrom").addEventListener("change", loadImportList);
+$("importDoBtn").addEventListener("click", doImport);
 $("newCreateBtn").addEventListener("click", createForm);
 $("archiveBtn").addEventListener("click", toggleArchive);
 $("previewBtn").addEventListener("click", openPreview);

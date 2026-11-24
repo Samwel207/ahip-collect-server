@@ -42,12 +42,13 @@
         <h2>How to design a form</h2>
         <ol class="help-steps">
           <li><b>+ New form</b> starts a blank form or a copy of a tool. Each <b>section</b> is one page on the phone.</li>
-          <li><b>＋</b> (toolbar on the right) adds a question after the open one: text, email, phone, multiple choice, checkboxes, dropdown, linear scale, Likert scale, grids (tables), number, slider, date, time, photo, audio, GPS or instructions.</li>
+          <li>Add questions with the <b>+ ADD</b> buttons under each section (multiple choice, checkboxes, dropdown, short answer, paragraph, number, linear scale, <b>Likert set</b>, <b>Table</b>, date, photo, <b>All types…</b>) or the <b>＋</b> toolbar on the right. <b>⇲ Import questions</b> copies questions from another form.</li>
           <li>Click a question to edit it. <b>More options</b> holds <b>Show only if</b> (any answer: choice, number, text, date, “is answered”) and answer checks. Drag ⠿ to reorder.</li>
           <li><b>⑂ Logic</b> on a section, or <b>Go to section based on answer</b> on a multiple-choice question, skips whole pages.</li>
           <li><b>Preview</b> fills the form as the data collector will, with all conditions working.</li>
-          <li><b>Quiz</b> (form settings): give each question its correct answer and points, and a time limit for the whole quiz. When time runs out the phone submits the answers given; the phone shows the score at the end and the dashboard shows scores per person.</li>
+          <li><b>⏱ Time limit</b> (form settings) gives the whole form a countdown; tick <b>✓ Quiz</b> to also score it: give each question its correct answer and points, and a time limit for the whole quiz. When time runs out the phone submits the answers given; the phone shows the score at the end and the dashboard shows scores per person.</li>
           <li>Or <b>Upload Excel</b>: download the <a href="/api/forms/template.xlsx">template</a> (it has a short guide sheet), fill it, upload, check the preview.</li>
+          <li><b>🗑 Delete form</b> removes a form you created (the six original tools are protected; submissions are kept).</li>
           <li><b>Publish</b>. Phones receive the new version at their next Sync. Earlier versions can be restored from <b>History</b>.</li>
         </ol>
         <p class="hint"><b>Name of CPP</b> (Tools 1, 3, 5) is a dropdown of every CPP already submitted, plus “New CPP (not in the list)”. It updates itself every 30 minutes.</p>
@@ -67,19 +68,21 @@
             <div class="form-settings">
               <label>Who is interviewed <input id="formTarget" placeholder="e.g. Health facility in-charges"></label>
               <label>Minutes <input id="formMinutes" type="number" min="1" max="600" placeholder="20"></label>
-              <label class="quiz-toggle"><input id="formQuiz" type="checkbox"> Quiz (answer key + score)</label>
-              <label id="quizLimitWrap" hidden>Time limit (minutes) <input id="formQuizMinutes" type="number" min="0" max="600" placeholder="none"></label>
+              <label title="One countdown for the whole form; when it ends the answers given so far are submitted">⏱ Time limit (minutes) <input id="formTimeLimit" type="number" min="0" max="600" placeholder="none"></label>
+              <label class="quiz-toggle"><input id="formQuiz" type="checkbox"> ✓ Quiz: score the answers</label>
             </div>
             <p id="formMeta" class="hint"></p>
           </div>
           <div class="editor-actions">
             <span id="dirtyBadge" class="dirty" hidden>Unpublished changes</span>
             <button id="previewBtn" type="button" class="btn ghost">👁 Preview</button>
+            <button id="importBtn" type="button" class="btn ghost">⇲ Import questions</button>
             <button id="uploadBtn" type="button" class="btn ghost">Upload Excel</button>
             <a id="downloadBtn" class="btn ghost" href="#">Download Excel</a>
             <button id="historyBtn" type="button" class="btn ghost">History</button>
             <button id="renumberBtn" type="button" class="btn ghost">Renumber</button>
             <button id="archiveBtn" type="button" class="btn ghost" hidden>Archive form</button>
+            <button id="deleteBtn" type="button" class="btn ghost danger-text" hidden>🗑 Delete form</button>
             <button id="discardBtn" type="button" class="btn ghost" disabled>Discard changes</button>
             <button id="publishBtn" type="button" class="btn primary" disabled>Publish</button>
           </div>
@@ -159,6 +162,26 @@
         </fieldset>
         <p id="newError" class="error" hidden></p>
         <button id="newCreateBtn" type="button" class="btn primary">Create form</button>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Import questions from another form -->
+  <div id="importDialog" class="drawer" hidden>
+    <div class="drawer-backdrop" data-close></div>
+    <aside class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="importTitle">
+      <div class="drawer-head">
+        <div>
+          <h2 id="importTitle">Import questions</h2>
+          <p class="muted">Copy questions (or whole sections) from another form into this one.</p>
+        </div>
+        <div><button type="button" class="btn ghost small" data-close>Close</button></div>
+      </div>
+      <div class="drawer-body">
+        <label class="field">From the form <select id="importFrom"></select></label>
+        <div id="importList" class="import-list"></div>
+        <label class="field">Add them to the section <select id="importTo"></select></label>
+        <button id="importDoBtn" type="button" class="btn primary">Import selected questions</button>
       </div>
     </aside>
   </div>
